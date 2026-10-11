@@ -53,6 +53,26 @@ namespace {
                 return out;
             }
 
+            static Json parse(const std::string& text) {
+                return Parser(text).parseDocument();
+            }
+
+            bool isNull()   const { return std::holds_alternative<Null>(_value); }
+            bool isBool()   const { return std::holds_alternative<bool>(_value); }
+            bool isNumber() const { return std::holds_alternative<double>(_value); }
+            bool isString() const { return std::holds_alternative<std::string>(_value); }
+            bool isArray()  const { return std::holds_alternative<Array>(_value); }
+            bool isObject() const { return std::holds_alternative<Object>(_value); }
+
+            bool asBool() const                { return std::get<bool>(_value); }
+            double asNumber() const            { return std::get<double>(_value); }
+            const std::string& asString() const { return std::get<std::string>(_value); }
+            const Array& asArray() const       { return std::get<Array>(_value); }
+            const Object& asObject() const     { return std::get<Object>(_value); }
+
+            const Json& operator[](const std::string& key) const { return asObject().at(key); }
+            const Json& operator[](size_t i) const               { return asArray().at(i); }
+
         private:
             std::variant<Null, bool, double, std::string, Array, Object> _value;
 
@@ -135,6 +155,206 @@ namespace {
                     out += '}';
                 }
             }
+
+            class Parser {
+                public:
+                    explicit Parser(const std::string& s) : _s(s) {}
+
+                    Json parseDocument() {
+                        Json v = _parseValue(0);
+                        _skipWs();
+                        if (_pos != _s.size()) _fail("unexpected trailing characters");
+                        return v;
+                    }
+                private:
+                    static constexpr int MAX_DEPTH = 512; // protects against stack overflow on "[[[[[[..."
+
+                    const std::string& _s;
+                    size_t _pos = 0;
+
+                    [[noreturn]] void _fail(const std::string& msg) const {
+                        throw std::runtime_error("JSON parse error at position " + std::to_string(_pos) + ": " + msg);
+                    }
+
+                    static bool _isDigit(char c) { return c >= '0' && c <= '9'; }
+
+                    void _skipWs() {
+                        while (_pos < _s.size() &&
+                               (_s[_pos] == ' ' || _s[_pos] == '\t' || _s[_pos] == '\n' || _s[_pos] == '\r'))
+                            ++_pos;
+                    }
+
+                    // Skips whitespace, then requires exactly this character
+                    void _consume(char expected) {
+                        _skipWs();
+                        if (_pos >= _s.size() || _s[_pos] != expected)
+                            _fail(std::string("expected '") + expected + "'");
+                        ++_pos;
+                    }
+
+                    void _expectWord(const char* word) {
+                        size_t len = std::char_traits<char>::length(word);
+                        if (_s.compare(_pos, len, word) != 0) _fail("invalid literal");
+                        _pos += len;
+                    }
+
+                    Json _parseValue(int depth) {
+                        if (depth > MAX_DEPTH) _fail("nesting too deep");
+                        _skipWs();
+                        if (_pos >= _s.size()) _fail("unexpected end of input");
+
+                        char c = _s[_pos];
+                        switch (c) {
+                            case '{': return _parseObject(depth);
+                            case '[': return _parseArray(depth);
+                            case '"': return Json(_parseString());
+                            case 't': _expectWord("true");  return Json(true);
+                            case 'f': _expectWord("false"); return Json(false);
+                            case 'n': _expectWord("null");  return Json(nullptr);
+                            default:
+                                if (c == '-' || _isDigit(c)) return _parseNumber();
+                                _fail("unexpected character");
+                        }
+                    }
+
+                    Json _parseObject(int depth) {
+                        ++_pos; // skip '{'
+                        Object obj;
+
+                        _skipWs();
+                        if (_pos < _s.size() && _s[_pos] == '}') { ++_pos; return Json(std::move(obj)); }
+
+                        while (true) {
+                            _skipWs();
+                            if (_pos >= _s.size() || _s[_pos] != '"') _fail("expected string key");
+                            std::string key = _parseString();
+                            _consume(':');
+                            obj[std::move(key)] = _parseValue(depth + 1);
+
+                            _skipWs();
+                            if (_pos < _s.size() && _s[_pos] == ',') { ++_pos; continue; }
+                            _consume('}');
+                            break;
+                        }
+                        return Json(std::move(obj));
+                    }
+
+                    Json _parseArray(int depth) {
+                        ++_pos; // skip '['
+                        Array arr;
+
+                        _skipWs();
+                        if (_pos < _s.size() && _s[_pos] == ']') { ++_pos; return Json(std::move(arr)); }
+
+                        while (true) {
+                            arr.push_back(_parseValue(depth + 1));
+
+                            _skipWs();
+                            if (_pos < _s.size() && _s[_pos] == ',') { ++_pos; continue; }
+                            _consume(']');
+                            break;
+                        }
+                        return Json(std::move(arr));
+                    }
+
+                    unsigned _parseHex4() {
+                        if (_pos + 4 > _s.size()) _fail("incomplete \\u escape");
+                        unsigned v = 0;
+                        for (int i = 0; i < 4; ++i) {
+                            char c = _s[_pos++];
+                            v <<= 4;
+                            if      (c >= '0' && c <= '9') v |= c - '0';
+                            else if (c >= 'a' && c <= 'f') v |= c - 'a' + 10;
+                            else if (c >= 'A' && c <= 'F') v |= c - 'A' + 10;
+                            else _fail("invalid hex digit in \\u escape");
+                        }
+                        return v;
+                    }
+
+                    static void _appendUtf8(std::string& out, unsigned cp) {
+                        if (cp < 0x80) {
+                            out += static_cast<char>(cp);
+                        } else if (cp < 0x800) {
+                            out += static_cast<char>(0xC0 | (cp >> 6));
+                            out += static_cast<char>(0x80 | (cp & 0x3F));
+                        } else if (cp < 0x10000) {
+                            out += static_cast<char>(0xE0 | (cp >> 12));
+                            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                            out += static_cast<char>(0x80 | (cp & 0x3F));
+                        } else {
+                            out += static_cast<char>(0xF0 | (cp >> 18));
+                            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                            out += static_cast<char>(0x80 | (cp & 0x3F));
+                        }
+                    }
+
+                    std::string _parseString() {
+                        ++_pos; // skip opening quote
+                        std::string out;
+
+                        while (true) {
+                            if (_pos >= _s.size()) _fail("unterminated string");
+                            unsigned char c = static_cast<unsigned char>(_s[_pos++]);
+
+                            if (c == '"') return out;
+                            if (c < 0x20) _fail("unescaped control character in string");
+                            if (c != '\\') { out += static_cast<char>(c); continue; }
+
+                            if (_pos >= _s.size()) _fail("unterminated escape");
+                            char e = _s[_pos++];
+                            switch (e) {
+                                case '"':  out += '"';  break;
+                                case '\\': out += '\\'; break;
+                                case '/':  out += '/';  break;
+                                case 'b':  out += '\b'; break;
+                                case 'f':  out += '\f'; break;
+                                case 'n':  out += '\n'; break;
+                                case 'r':  out += '\r'; break;
+                                case 't':  out += '\t'; break;
+                                case 'u': {
+                                    unsigned cp = _parseHex4();
+                                    if (cp >= 0xD800 && cp <= 0xDBFF) {          // high surrogate -> needs a low one
+                                        if (_s.compare(_pos, 2, "\\u") != 0) _fail("lone high surrogate");
+                                        _pos += 2;
+                                        unsigned lo = _parseHex4();
+                                        if (lo < 0xDC00 || lo > 0xDFFF) _fail("invalid low surrogate");
+                                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                                    } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                                        _fail("lone low surrogate");
+                                    }
+                                    _appendUtf8(out, cp);
+                                    break;
+                                }
+                                default: _fail("invalid escape sequence");
+                            }
+                        }
+                    }
+
+                    void _requireDigits() {
+                        if (_pos >= _s.size() || !_isDigit(_s[_pos])) _fail("expected digit");
+                        while (_pos < _s.size() && _isDigit(_s[_pos])) ++_pos;
+                    }
+
+                    // Grammar: -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?
+                    Json _parseNumber() {
+                        size_t start = _pos;
+                        if (_s[_pos] == '-') ++_pos;
+
+                        if (_pos < _s.size() && _s[_pos] == '0') ++_pos;   // no leading zeros like 012
+                        else _requireDigits();
+
+                        if (_pos < _s.size() && _s[_pos] == '.') { ++_pos; _requireDigits(); }
+
+                        if (_pos < _s.size() && (_s[_pos] == 'e' || _s[_pos] == 'E')) {
+                            ++_pos;
+                            if (_pos < _s.size() && (_s[_pos] == '+' || _s[_pos] == '-')) ++_pos;
+                            _requireDigits();
+                        }
+
+                        return Json(std::strtod(_s.substr(start, _pos - start).c_str(), nullptr));
+                    }
+                };
     };
 
     class Server {
@@ -305,18 +525,7 @@ int main() {
 
     server.get("/", [](const ServerRequest& req, ServerResponse& res) {
         Json response = Json::Object{
-            {"message", "Hello, World!"}
-        };
-
-        res.body = response.dump(4);
-        res.status = HTTP_OK;
-        res.contentType = "text/json";
-    });
-
-    server.get("/users", [](const ServerRequest& req, ServerResponse& res) {
-        Json response = Json::Array{
-            Json::Object{{"id", 1}, {"name", "Alice"}},
-            Json::Object{{"id", 2}, {"name", "Bob"}}
+            {"message", "Hello, World!"},
         };
 
         res.body = response.dump(4);
