@@ -3,4 +3,7 @@ project(language_learning_backend)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(language_learning_backend main.cpp)
+add_executable(language_learning_backend main.cpp
+        HttpServer.cpp
+        HttpServer.h
+)
