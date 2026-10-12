@@ -6,21 +6,27 @@
 #include <map>
 #include <functional>
 #include <netinet/in.h>
-#include <iostream>
-#include <unistd.h>
 
 namespace HTTPServer {
+    class Json;
+    class Server;
+
     #define HTTP_INTERNAL_SERVER_ERROR 500
     #define HTTP_OK 200
+    #define HTTP_CREATED 201
+    #define HTTP_BAD_REQUEST 400
     #define HTTP_NOT_FOUND 404
 
     struct ServerRequest {
         std::string method;
         std::string path;
         std::map<std::string, std::string> query;
+        std::map<std::string, std::string> headers;
+        std::string body;
 
         [[nodiscard]] bool hasQuery(const std::string& key) const;
         [[nodiscard]] std::string getQuery(const std::string& key, const std::string& fallback = "") const;
+        [[nodiscard]] std::string getHeader(const std::string& key, const std::string& fallback = "") const;
     };
 
     struct ServerResponse {
@@ -36,15 +42,22 @@ namespace HTTPServer {
             explicit Server(int port);
             void start();
             void get(const std::string& path, RequestHandler handler);
+            void post(const std::string& path, RequestHandler handler);
             int getPort() const;
+            void sendJson(ServerResponse& res, int status, const Json& json, int indent = -1);
 
         private:
             int _port;
             int _server_fd;
             sockaddr_in _address;
-            std::map<std::string, RequestHandler> _getRoutes;
+            std::map<std::string, std::map<std::string, RequestHandler>> _routes; // method -> path -> handler
 
-            // Move private method signatures here
+            static constexpr int MAX_HEADER_SIZE = 16 * 1024;
+            static constexpr int MAX_BODY_SIZE = 1024 * 1024; // 1 MB
+
+            static std::string _toLower(std::string s);
+            static std::string _trim(const std::string& s);
+            void _addRoute(const std::string& method, const std::string& path, RequestHandler handler);
             bool _createSocket();
             bool _bindSocket();
             bool _listenPort() const;
@@ -56,6 +69,9 @@ namespace HTTPServer {
             static void _parseQuery(const std::string& queryString, std::map<std::string, std::string>& out);
             void _handleClient(int client_fd);
             void _acceptLoop();
+            int _readRequest(int client_fd, ServerRequest& request);
+            void _setError(ServerResponse& res, int status);
+            void _dispatch(const ServerRequest& request, ServerResponse& response);
     };
 
     class Json {
