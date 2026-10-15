@@ -6,6 +6,10 @@
 #include <unistd.h>
 #include "HttpServer.h"
 
+#include <filesystem>
+#include <fstream>
+#include <ranges>
+
 namespace HTTPServer {
     //region ServerRequest methods
     bool ServerRequest::hasQuery(const std::string &key) const {
@@ -260,7 +264,7 @@ namespace HTTPServer {
         if (!_parseRequest(raw.substr(0, headEnd), request)) return HTTP_BAD_REQUEST;
         std::string body = raw.substr(headEnd + 4); // whatever of the body already arrived
 
-        if (request.headers.count("transfer-encoding")) return 501; // chunked not supported
+        if (request.headers.contains("transfer-encoding")) return 501; // chunked not supported
 
         size_t contentLength = 0;
         auto it = request.headers.find("content-length");
@@ -315,8 +319,8 @@ namespace HTTPServer {
         }
 
         // Path exists, but not for this method -> 405 instead of 404
-        for (const auto& entry : _routes) {
-            if (entry.second.count(request.path)) {
+        for (const auto &val: _routes | std::views::values) {
+            if (val.contains(request.path)) {
                 _setError(response, 405);
                 return;
             }
@@ -352,8 +356,6 @@ namespace HTTPServer {
 
     const Json& Json::operator[](const std::string& key) const { return asObject().at(key); }
     const Json& Json::operator[](size_t i) const               { return asArray().at(i); }
-
-    // --- Json Private Helpers ---
 
     void Json::_newline(std::string& out, int indent, int depth) {
         if (indent < 0) return;
@@ -462,7 +464,7 @@ namespace HTTPServer {
     }
 
     void Json::Parser::_expectWord(const char* word) {
-        size_t len = std::char_traits<char>::length(word);
+        const size_t len = std::strlen(word);
         if (_s.compare(_pos, len, word) != 0) _fail("invalid literal");
         _pos += len;
     }
@@ -471,8 +473,7 @@ namespace HTTPServer {
         if (depth > MAX_DEPTH) _fail("nesting too deep");
         _skipWs();
         if (_pos >= _s.size()) _fail("unexpected end of input");
-        char c = _s[_pos];
-        switch (c) {
+        switch (char c = _s[_pos]) {
             case '{': return _parseObject(depth);
             case '[': return _parseArray(depth);
             case '"': return Json(_parseString());
@@ -561,8 +562,7 @@ namespace HTTPServer {
             if (c < 0x20) _fail("unescaped control character in string");
             if (c != '\\') { out += static_cast<char>(c); continue; }
             if (_pos >= _s.size()) _fail("unterminated escape");
-            char e = _s[_pos++];
-            switch (e) {
+            switch (_s[_pos++]) {
                 case '"':  out += '"';  break;
                 case '\\': out += '\\'; break;
                 case '/':  out += '/';  break;
@@ -609,4 +609,63 @@ namespace HTTPServer {
         return Json(std::strtod(_s.substr(start, _pos - start).c_str(), nullptr));
     }
     //endregion JSON methods
+
+    //region Database methods
+    //region public methods
+    Database::Database(std::string path, bool createIfNotExists) : _path(std::move(path)), _createIfNotExists(createIfNotExists) {
+        _load();
+    }
+
+    const std::string& Database::getPath() const {
+        return _path;
+    }
+
+    size_t Database::collectionCount() const {
+        return _data.size();
+    }
+    //endregion public methods
+    //region private methods
+    void Database::_load() {
+        if (!std::filesystem::exists(_path)) {
+            if (_createIfNotExists) {
+                std::cout << "No database file at " << _path << ", creating new one" << std::endl;
+
+                // Open the file for writing. This creates the file if it doesn't exist.
+                std::ofstream outfile(_path);
+
+                if (!outfile) {
+                    throw std::runtime_error("Failed to create database file at " + _path);
+                }
+
+                // Optional: Write initial content or just close it to create an empty file
+                outfile.write("{}", 2); // Write an empty JSON object to the file
+                outfile.close();
+
+                return;
+            }
+            throw std::runtime_error("Database file not found: " + _path);
+        }
+
+        std::ifstream file(_path, std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("Cannot open database file: " + _path);
+        }
+
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        const std::string content = buffer.str();
+
+        if (content.empty()) return; // an empty file is just an empty database
+
+        Json parsed = Json::parse(content); // throws on invalid JSON
+        if (!parsed.isObject()) {
+            throw std::runtime_error("Database file is corrupted: expected a JSON object at top level");
+        }
+
+        _data = parsed.asObject();
+        std::cout << "Loaded database from " << _path
+                  << " (" << _data.size() << " collections)" << std::endl;
+    }
+    //endregion private methods
+    //endregion Database methods
 }

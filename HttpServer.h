@@ -44,7 +44,8 @@ namespace HTTPServer {
             void get(const std::string& path, RequestHandler handler);
             void post(const std::string& path, RequestHandler handler);
             int getPort() const;
-            void sendJson(ServerResponse& res, int status, const Json& json, int indent = -1);
+
+            static void sendJson(ServerResponse& res, int status, const Json& json, int indent = -1);
 
         private:
             int _port;
@@ -69,8 +70,10 @@ namespace HTTPServer {
             static void _parseQuery(const std::string& queryString, std::map<std::string, std::string>& out);
             void _handleClient(int client_fd);
             void _acceptLoop();
-            int _readRequest(int client_fd, ServerRequest& request);
-            void _setError(ServerResponse& res, int status);
+
+            static int _readRequest(int client_fd, ServerRequest& request);
+
+            static void _setError(ServerResponse& res, int status);
             void _dispatch(const ServerRequest& request, ServerResponse& response);
     };
 
@@ -144,6 +147,24 @@ namespace HTTPServer {
                     void _requireDigits();
                     Json _parseNumber();
             };
+    };
+
+    class Database {
+        public:
+            explicit Database(std::string path, bool createIfNotExists = false);
+
+            Database(const Database&) = delete; // Prevent copy construction
+            Database& operator=(const Database&) = delete; // Prevent copy assignment
+
+            const std::string& getPath() const;
+            size_t collectionCount() const;
+
+        private:
+            std::string _path;
+            Json::Object _data;
+            bool _createIfNotExists;
+
+            void _load();
     };
 }
 
