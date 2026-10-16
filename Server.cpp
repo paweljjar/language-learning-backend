@@ -12,118 +12,117 @@
 #include "Json.h"
 
 namespace HTTPServer {
-    bool ServerRequest::hasQuery(const std::string &key) const {
-        return query.contains(key);
+    bool ServerRequest::hasQuery(const std::string &key) const { // Check if a query parameter exists
+        return query.contains(key); // Use the contains method of std::map to check for the key
     }
 
-    std::string ServerRequest::getQuery(const std::string &key, const std::string &fallback) const {
-        auto it = query.find(key);
-        return it != query.end() ? it->second : fallback;
+    std::string ServerRequest::getQuery(const std::string &key, const std::string &fallback) const { // Get the value of a query parameter, or return a fallback if it doesn't exist
+        const auto it = query.find(key); // Use the find method of std::map to look for the key
+        return it != query.end() ? it->second : fallback; // If the key is found, return its value; otherwise, return the fallback
     }
 
-    std::string ServerRequest::getHeader(const std::string& key, const std::string& fallback) const {
-        auto it = headers.find(key);
-        return it != headers.end() ? it->second : fallback;
+    std::string ServerRequest::getHeader(const std::string& key, const std::string& fallback) const { // Get the value of a header, or return a fallback if it doesn't exist
+        const auto it = headers.find(key); // Use the find method of std::map to look for the key
+        return it != headers.end() ? it->second : fallback; // If the key is found, return its value; otherwise, return the fallback
     }
 
     //region public methods
-    Server::Server(const int port) : _port(port), _server_fd(-1), _address{} {
-        if (port < 0 || port > 65535) {
-            throw std::invalid_argument("Port number must be between 0 and 65535");
+    Server::Server(const int port) : _port(port), _server_fd(-1), _address{} { // Constructor for the Server class, initializes the port and sets the server file descriptor to -1 (indicating it's not yet created)
+        if (port < 0 || port > 65535) { // Validate the port number to ensure it's within the valid range for TCP/UDP ports
+            throw std::invalid_argument("Port number must be between 0 and 65535"); // If the port number is invalid, throw an exception to indicate the error
         }
     }
 
-    void Server::start() {
-        if (!this->_createSocket()) {
-            std::cerr << "Error creating socket" << std::endl;
+    void Server::start() { // Start the server, creating the socket, binding it, and listening for incoming connections
+        if (!this->_createSocket()) { // Attempt to create the socket, and if it fails, print an error message and return
+            std::cerr << "Error creating socket" << std::endl; // Print an error message to standard error indicating that the socket creation failed
             return;
         }
         if (!this->_bindSocket()) {
-            std::cerr << "Error binding socket" << std::endl;
+            std::cerr << "Error binding socket" << std::endl; // Print an error message to standard error indicating that the socket binding failed
             return;
         }
         if (!this->_listenPort()) {
-            std::cerr << "Error listening on socket" << std::endl;
+            std::cerr << "Error listening on socket" << std::endl; // Print an error message to standard error indicating that the socket listening failed
             return;
         }
-        std::cout << "Server started on port " << this->getPort() << std::endl;
-        _acceptLoop();
+        std::cout << "Server started on port " << this->getPort() << std::endl; // Print a message to standard output indicating that the server has started and is listening on the specified port
+        _acceptLoop(); // Enter the accept loop to continuously accept incoming client connections and handle them
     }
 
-    void Server::get(const std::string& path, RequestHandler handler)  { _addRoute("GET",  path, std::move(handler)); }
-    void Server::post(const std::string& path, RequestHandler handler) { _addRoute("POST", path, std::move(handler)); }
+    void Server::get(const std::string& path, RequestHandler handler)  { _addRoute("GET",  path, std::move(handler)); } // Register a GET route with the specified path and handler function, moving the handler to avoid unnecessary copies
+    void Server::post(const std::string& path, RequestHandler handler) { _addRoute("POST", path, std::move(handler)); } // Register a POST route with the specified path and handler function, moving the handler to avoid unnecessary copies
 
-    int Server::getPort() const {
+    int Server::getPort() const { // Return the port number that the server is listening on
         return _port;
     }
 
-    void Server::sendJson(ServerResponse& res, int status, const Json& json, int indent) {
-        res.status = status;
-        res.contentType = "application/json";
-        res.body = json.dump(indent);
+    void Server::sendJson(ServerResponse& res, const int status, const Json& json, const int indent) { // Send a JSON response to the client, setting the status code, content type, and body of the response
+        res.status = status; // Set the HTTP status code of the response to the provided status value
+        res.contentType = "application/json"; // Set the Content-Type header of the response to "application/json" to indicate that the response body contains JSON data
+        res.body = json.dump(indent); // Serialize the provided Json object to a string using the dump method, with the specified indentation level, and set it as the body of the response
     }
     //endregion public methods
 
     //region private methods
-    std::string Server::_toLower(std::string s) {
+    std::string Server::_toLower(std::string s) { // Convert a string to lowercase by iterating over each character and applying the tolower function, returning the modified string
         for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return s;
     }
 
-    std::string Server::_trim(const std::string& s) {
-        size_t b = s.find_first_not_of(" \t");
-        if (b == std::string::npos) return "";
-        return s.substr(b, s.find_last_not_of(" \t") - b + 1);
+    std::string Server::_trim(const std::string& s) { // Trim whitespace from the beginning and end of a string
+        const size_t b = s.find_first_not_of(" \t"); // Find the index of the first character that is not a space or tab
+        if (b == std::string::npos) return ""; // If the string is entirely whitespace, return an empty string
+        return s.substr(b, s.find_last_not_of(" \t") - b + 1); // Return the substring from the first non-whitespace character to the last non-whitespace character
     }
 
-    void Server::_addRoute(const std::string& method, const std::string& path, RequestHandler handler) {
-        _routes[method][path] = std::move(handler);
-        std::cout << "Registered " << method << " route: " << path << std::endl;
+    void Server::_addRoute(const std::string& method, const std::string& path, RequestHandler handler) { // Add a route to the server's routing table, associating an HTTP method and path with a handler function
+        _routes[method][path] = std::move(handler); // Store the handler function in the nested map, moving it to avoid unnecessary copies
+        std::cout << "Registered " << method << " route: " << path << std::endl; // Print a message to standard output indicating that the route has been registered, including the HTTP method and path
     }
 
-    bool Server::_createSocket() {
-        std::cout << "Creating socket..." << std::endl;
-        this->_server_fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (this->_server_fd == -1) {
-            std::cerr << "Failed to create socket" << std::endl;
+    bool Server::_createSocket() { // Create a TCP socket for the server to listen for incoming connections
+        std::cout << "Creating socket..." << std::endl; // Print a message to standard output indicating that the socket creation process has started
+        this->_server_fd = socket(AF_INET, SOCK_STREAM, 0); // Create a socket using the IPv4 address family (AF_INET), stream socket type (SOCK_STREAM) for TCP, and default protocol (0)
+        if (this->_server_fd == -1) { // Check if the socket creation failed (socket returns -1 on error)
+            std::cerr << "Failed to create socket" << std::endl; // Print an error message to standard error indicating that the socket creation failed
             return false;
         }
 
-        int opt = 1;
+        constexpr int opt = 1; // Set the socket option to allow reuse of the address, which helps avoid "address already in use" errors when restarting the server
         setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-        std::cout << "Socket created!" << std::endl;
+        std::cout << "Socket created!" << std::endl; // Print a message to standard output indicating that the socket has been successfully created
         return true;
     }
 
-    bool Server::_bindSocket() {
-        std::cout << "Binding socket..." << std::endl;
-        this->_address.sin_family = AF_INET; // IPv4
-        this->_address.sin_addr.s_addr = INADDR_ANY; // Bind to all available interfaces
-        this->_address.sin_port = htons(this->_port); // Convert port number to network byte order
+    bool Server::_bindSocket() { // Bind the created socket to the specified address and port, allowing the server to listen for incoming connections on that port
+        std::cout << "Binding socket..." << std::endl; // Print a message to standard output indicating that the socket binding process has started
+        this->_address.sin_family = AF_INET; // Set the address family to IPv4 (AF_INET) for the socket
+        this->_address.sin_addr.s_addr = INADDR_ANY; // Set the IP address to INADDR_ANY, allowing the server to accept connections on any available network interface
+        this->_address.sin_port = htons(this->_port); // Set the port number for the socket, converting it to network byte order using htons (host-to-network short)
 
-        // Bind the socket to the specified address and port
-        if (bind(this->_server_fd, reinterpret_cast<sockaddr*>(&this->_address), sizeof(this->_address)) == -1) {
-            std::cerr << "Failed to bind socket" << std::endl;
+        if (bind(this->_server_fd, reinterpret_cast<sockaddr*>(&this->_address), sizeof(this->_address)) == -1) { // Attempt to bind the socket to the specified address and port, checking for errors (bind returns -1 on failure)
+            std::cerr << "Failed to bind socket" << std::endl; // Print an error message to standard error indicating that the socket binding failed
             return false;
         }
 
-        std::cout << "Socket bound!" << std::endl;
+        std::cout << "Socket bound!" << std::endl; // Print a message to standard output indicating that the socket has been successfully bound
         return true;
     }
 
-    bool Server::_listenPort() const {
-        std::cout << "Listening on socket..." << std::endl;
-        if (listen(this->_server_fd, 10) == -1) {
-            std::cerr << "Failed to listen on socket" << std::endl;
+    bool Server::_listenPort() const { // Start listening for incoming connections on the bound socket, allowing the server to accept client requests
+        std::cout << "Listening on socket..." << std::endl; // Print a message to standard output indicating that the server is starting to listen for incoming connections
+        if (listen(this->_server_fd, 10) == -1) { // Call the listen function on the socket, specifying a backlog of 10 (the maximum number of pending connections), and check for errors (listen returns -1 on failure)
+            std::cerr << "Failed to listen on socket" << std::endl; // Print an error message to standard error indicating that the server failed to start listening on the socket
             return false;
         }
 
-        std::cout << "Socket is now listening!" << std::endl;
+        std::cout << "Socket is now listening!" << std::endl; // Print a message to standard output indicating that the socket is now listening for incoming connections
         return true;
     }
 
-    std::string Server::_getStatusMessage(int status) {
+    std::string Server::_getStatusMessage(const int status) { // Return a human-readable message corresponding to an HTTP status code, allowing the server to provide meaningful responses to clients
         switch (status) {
             case HTTP_OK:
                 return "OK";
@@ -142,7 +141,7 @@ namespace HTTPServer {
         }
     }
 
-    std::string Server::_buildResponse(const ServerResponse& response) {
+    std::string Server::_buildResponse(const ServerResponse& response) { // Build a complete HTTP response string from the provided ServerResponse object, including the status line, headers, and body, allowing the server to send a properly formatted response to the client
         std::ostringstream out;
         out << "HTTP/1.1 " << response.status << " " << _getStatusMessage(response.status) << "\r\n"
                     << "Content-Type: " << response.contentType << "\r\n"
@@ -152,178 +151,177 @@ namespace HTTPServer {
         return out.str();
     }
 
-    bool Server::_parseRequest(const std::string& head, ServerRequest& request) {
-        size_t lineEnd = head.find("\r\n");
-        std::istringstream line(head.substr(0, lineEnd));
-        std::string target, version;
+    bool Server::_parseRequest(const std::string& raw, ServerRequest& request) { // Parse a raw HTTP request string into a ServerRequest object, extracting the method, path, query parameters, and headers, allowing the server to process incoming requests
+        size_t lineEnd = raw.find("\r\n"); // Find the end of the request line (the first line of the HTTP request) by searching for the CRLF ("\r\n") sequence
+        std::istringstream line(raw.substr(0, lineEnd)); // Create an input string stream from the request line to facilitate parsing of the method, target (path and query), and HTTP version
+        std::string target, version; // Declare variables to hold the target (path and query) and HTTP version extracted from the request line
 
-        if (!(line >> request.method >> target >> version)) {
-            std::cerr << "Failed to parse request line" << std::endl;
+        if (!(line >> request.method >> target >> version)) { // Attempt to read the method, target, and version from the request line; if any of these fail to parse, return false to indicate a malformed request
+            std::cerr << "Failed to parse request line" << std::endl; // Print an error message to standard error indicating that the request line could not be parsed correctly
             return false;
         }
 
-        size_t q = target.find('?');
-        request.path = target.substr(0, q);
-        if (q != std::string::npos) {
-            _parseQuery(target.substr(q + 1), request.query);
+        size_t q = target.find('?'); // Find the position of the '?' character in the target string, which separates the path from the query string; if not found, q will be std::string::npos
+        request.path = target.substr(0, q); // Extract the path from the target string by taking the substring from the beginning of the target to the position of the '?' character (or the end of the string if '?' is not found)
+        if (q != std::string::npos) { // If a query string is present (indicated by the presence of '?'), parse the query parameters into the request.query map
+            _parseQuery(target.substr(q + 1), request.query); // Call the _parseQuery helper function to parse the query string (the substring after the '?') and populate the request.query map with key-value pairs representing the query parameters
         }
 
-        // Headers: "Name: value" lines
-        if (lineEnd == std::string::npos) return true;
-        size_t pos = lineEnd + 2;
-        while (pos < head.size()) {
-            size_t end = head.find("\r\n", pos);
-            if (end == std::string::npos) end = head.size();
-            std::string headerLine = head.substr(pos, end - pos);
-            pos = end + 2;
+        if (lineEnd == std::string::npos) return true; // If there are no headers (indicated by the absence of a CRLF after the request line), return true to indicate that the request has been successfully parsed
+        size_t pos = lineEnd + 2; // Set the position to the start of the headers section by moving past the CRLF that ends the request line
+        while (pos < raw.size()) { // Loop through the headers section of the raw request string, parsing each header line until the end of the string is reached
+            size_t end = raw.find("\r\n", pos); // Find the end of the current header line by searching for the next CRLF ("\r\n") sequence starting from the current position
+            if (end == std::string::npos) end = raw.size(); // If no CRLF is found, set the end position to the end of the string, indicating that this is the last header line
+            std::string headerLine = raw.substr(pos, end - pos); // Extract the current header line from the raw request string by taking the substring from the current position to the end position
+            pos = end + 2; // Advance the search position past the CRLF sequence to the start of the next header line
 
-            size_t colon = headerLine.find(':');
-            if (colon == std::string::npos) return false; // malformed header
-            request.headers[_toLower(headerLine.substr(0, colon))] = _trim(headerLine.substr(colon + 1));
+            size_t colon = headerLine.find(':'); // Locate the colon separator that divides the header name from its value
+            if (colon == std::string::npos) return false; // If no colon is found, the header line is malformed, so return false to indicate a parsing error
+            request.headers[_toLower(headerLine.substr(0, colon))] = _trim(headerLine.substr(colon + 1)); // Normalize the header name to lowercase and trim any whitespace from the value before storing it in the headers map
         }
-        return true;
+        return true; // Successfully parsed the entire request line and all header fields, return true
     }
 
-    int Server::_hexValue(char c) {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-        return -1;
+    int Server::_hexValue(const char c) { // Convert a single hexadecimal character to its numerical integer value (0-15), or return -1 if invalid
+        if (c >= '0' && c <= '9') return c - '0'; // If the character is a decimal digit ('0'-'9'), return its numeric value by subtracting '0'
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10; // If the character is a lowercase hex letter ('a'-'f'), return its decimal value (10-15)
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10; // If the character is an uppercase hex letter ('A'-'F'), return its decimal value (10-15)
+        return -1; // If the character is not a valid hexadecimal digit, return -1 to indicate an error
     }
 
-    std::string Server::_urlDecode(const std::string& s) {
-        std::string out;
-        out.reserve(s.size());
-        for (size_t i = 0; i < s.size(); ++i) {
-            if (s[i] == '+') {
-                out += ' ';
-            } else if (s[i] == '%' && i + 2 < s.size() && _hexValue(s[i + 1]) >= 0 && _hexValue(s[i + 2]) >= 0) {
-                out += static_cast<char>(_hexValue(s[i + 1]) * 16 + _hexValue(s[i + 2]));
-                i += 2;
-            } else {
-                out += s[i];
+    std::string Server::_urlDecode(const std::string& s) { // Decode a percent-encoded URL string, converting '+' to space and '%XX' hexadecimal sequences to their character values
+        std::string out; // Initialize a string to accumulate the decoded output characters
+        out.reserve(s.size()); // Preallocate memory for the output string to avoid multiple reallocations during decoding
+        for (size_t i = 0; i < s.size(); ++i) { // Loop through each character of the input string to inspect and decode it
+            if (s[i] == '+') { // If the character is '+', treat it as an encoded space according to URL encoding rules
+                out += ' '; // Replace '+' with a space character in the decoded output
+            } else if (s[i] == '%' && i + 2 < s.size() && _hexValue(s[i + 1]) >= 0 && _hexValue(s[i + 2]) >= 0) { // Check if '%' is followed by two valid hexadecimal digits representing an encoded byte
+                out += static_cast<char>(_hexValue(s[i + 1]) * 16 + _hexValue(s[i + 2])); // Convert the two hexadecimal digits into a single byte character and append it to the output
+                i += 2; // Advance the index by 2 to skip past the two hex digits that were processed
+            } else { // If the character is not part of an escape sequence, treat it as a literal character
+                out += s[i]; // Append regular characters directly to the output string
             }
         }
-        return out;
+        return out; // Return the fully decoded string
     }
 
-    void Server::_parseQuery(const std::string& queryString, std::map<std::string, std::string>& out) {
-        std::istringstream stream(queryString);
-        std::string pair;
-        while (std::getline(stream, pair, '&')) {
-            if (pair.empty()) continue;
-            size_t eq = pair.find('=');
-            std::string key   = eq == std::string::npos ? pair : pair.substr(0, eq);
-            std::string value = eq == std::string::npos ? ""   : pair.substr(eq + 1);
-            out[_urlDecode(key)] = _urlDecode(value);
+    void Server::_parseQuery(const std::string& queryString, std::map<std::string, std::string>& out) { // Parse a query string containing key-value pairs separated by '&' and populate the provided map with URL-decoded values
+        std::istringstream stream(queryString); // Create an input string stream from the query string to split pairs by the '&' delimiter
+        std::string pair; // Declare a string variable to hold each individual key-value pair token
+        while (std::getline(stream, pair, '&')) { // Read key-value pairs separated by '&' until the end of the query string is reached
+            if (pair.empty()) continue; // Skip empty segments caused by leading, trailing, or duplicate '&' characters
+            size_t eq = pair.find('='); // Find the position of the '=' character that separates the key from the value in the pair
+            std::string key   = eq == std::string::npos ? pair : pair.substr(0, eq); // Extract key up to '=', or use the entire pair if '=' is absent
+            std::string value = eq == std::string::npos ? ""   : pair.substr(eq + 1); // Extract value after '=', or use an empty string if '=' is absent
+            out[_urlDecode(key)] = _urlDecode(value); // URL-decode both the key and value, and insert them into the output map
         }
     }
 
-    void Server::_handleClient(int client_fd) {
-        ServerRequest request;
-        ServerResponse response;
+    void Server::_handleClient(int client_fd) { // Process an accepted client connection by reading the request, routing it, sending the response, and closing the connection
+        ServerRequest request; // Instantiate a ServerRequest object to hold the parsed incoming request data
+        ServerResponse response; // Instantiate a ServerResponse object to hold the response data to be generated
 
-        int status = _readRequest(client_fd, request);
-        if (status < 0) { close(client_fd); return; }
+        int status = _readRequest(client_fd, request); // Read and parse the incoming HTTP request from the client socket, returning 0 on success or an HTTP status code on error
+        if (status < 0) { close(client_fd); return; } // If reading failed or the client disconnected prematurely, close the socket and exit early
 
-        if (status != 0) _setError(response, status);
-        else             _dispatch(request, response);
+        if (status != 0) _setError(response, status); // If request reading or validation returned an error status code, set the error response
+        else             _dispatch(request, response); // Otherwise, dispatch the valid request to the matching registered route handler
 
-        std::string out = _buildResponse(response);
-        write(client_fd, out.c_str(), out.size());
-        close(client_fd);
+        std::string out = _buildResponse(response); // Serialize the ServerResponse object into a formatted HTTP response string
+        write(client_fd, out.c_str(), out.size()); // Write the complete HTTP response string to the client socket
+        close(client_fd); // Close the client connection socket since HTTP Connection: close is used
     }
 
-    void Server::_acceptLoop() {
-        while (true) {
-            sockaddr_in client{};
-            socklen_t len = sizeof(client);
-            const int client_fd = accept(this->_server_fd, reinterpret_cast<sockaddr*>(&client), &len);
-            if (client_fd == -1) {
-                std::cerr << "Failed to accept connection" << std::endl;
-                continue;
+    void Server::_acceptLoop() { // Main accept loop running continuously to accept and handle incoming client TCP connections
+        while (true) { // Enter an infinite loop to keep accepting connections as long as the server is running
+            sockaddr_in client{}; // Allocate a sockaddr_in structure to store incoming client connection address info
+            socklen_t len = sizeof(client); // Initialize address structure length for the accept system call
+            const int client_fd = accept(this->_server_fd, reinterpret_cast<sockaddr*>(&client), &len); // Accept the next connection on the server socket, returning a client file descriptor
+            if (client_fd == -1) { // Check if the accept call failed (accept returns -1 on error)
+                std::cerr << "Failed to accept connection" << std::endl; // Print an error message to standard error indicating that connection acceptance failed
+                continue; // Continue to the next loop iteration to attempt accepting subsequent connections
             }
-            _handleClient(client_fd);
+            _handleClient(client_fd); // Handle the accepted client connection synchronously using the client file descriptor
         }
     }
 
-    int Server::_readRequest(int client_fd, ServerRequest &request) {
-        std::string raw;
-        char buffer[4096];
+    int Server::_readRequest(int client_fd, ServerRequest &request) { // Read raw bytes from the client socket, extract headers and body according to Content-Length, and populate the ServerRequest object
+        std::string raw; // Buffer to accumulate raw data read from the socket until all headers are received
+        char buffer[4096]; // Chunk buffer of 4 KB used to read data from the socket in increments
 
-        size_t headEnd;
-        while ((headEnd = raw.find("\r\n\r\n")) == std::string::npos) {
-            if (raw.size() > MAX_HEADER_SIZE) return 431; // headers too large
-            ssize_t n = read(client_fd, buffer, sizeof(buffer));
-            if (n <= 0) return -1;
-            raw.append(buffer, static_cast<size_t>(n));
+        size_t headEnd; // Variable to store position of double CRLF ("\r\n\r\n") separating headers from the request body
+        while ((headEnd = raw.find("\r\n\r\n")) == std::string::npos) { // Loop until the double CRLF indicating the end of the HTTP headers is found
+            if (raw.size() > MAX_HEADER_SIZE) return 431; // If accumulated raw data exceeds the maximum allowed header size, return HTTP 431 (Request Header Fields Too Large)
+            ssize_t n = read(client_fd, buffer, sizeof(buffer)); // Read incoming bytes from the client socket into the temporary chunk buffer
+            if (n <= 0) return -1; // If read returns 0 (client closed connection) or negative (read error), return -1 to signal failure
+            raw.append(buffer, static_cast<size_t>(n)); // Append newly read bytes to the raw request buffer string
         }
 
-        if (!_parseRequest(raw.substr(0, headEnd), request)) return HTTP_BAD_REQUEST;
-        std::string body = raw.substr(headEnd + 4); // whatever of the body already arrived
+        if (!_parseRequest(raw.substr(0, headEnd), request)) return HTTP_BAD_REQUEST; // Parse request line and headers; if parsing fails, return HTTP 400 (Bad Request)
+        std::string body = raw.substr(headEnd + 4); // Extract initial body bytes that may have been read past the double CRLF delimiter
 
-        if (request.headers.contains("transfer-encoding")) return 501; // chunked not supported
+        if (request.headers.contains("transfer-encoding")) return 501; // Return HTTP 501 (Not Implemented) if Transfer-Encoding header is present (chunked encoding not supported)
 
-        size_t contentLength = 0;
-        auto it = request.headers.find("content-length");
-        if (it != request.headers.end()) {
-            const std::string& value = it->second;
-            if (value.empty() || !std::isdigit(static_cast<unsigned char>(value[0]))) return HTTP_BAD_REQUEST;
-            try {
-                size_t used = 0;
-                contentLength = std::stoull(value, &used);
-                if (used != value.size()) return HTTP_BAD_REQUEST;
-            } catch (const std::exception&) {
-                return HTTP_BAD_REQUEST;
+        size_t contentLength = 0; // Initialize expected body length to 0
+        auto it = request.headers.find("content-length"); // Look up Content-Length header in the parsed headers map
+        if (it != request.headers.end()) { // If Content-Length header is present, validate and extract its numeric value
+            const std::string& value = it->second; // Retrieve string value of the Content-Length header
+            if (value.empty() || !std::isdigit(static_cast<unsigned char>(value[0]))) return HTTP_BAD_REQUEST; // If value is empty or does not start with a digit, return HTTP 400 (Bad Request)
+            try { // Attempt to parse the numeric string into an integer value safely
+                size_t used = 0; // Variable to track number of characters consumed by stoull
+                contentLength = std::stoull(value, &used); // Convert Content-Length string to unsigned long long
+                if (used != value.size()) return HTTP_BAD_REQUEST; // If there are trailing non-digit characters in the value, return HTTP 400 (Bad Request)
+            } catch (const std::exception&) { // Catch any exception thrown by stoull (e.g. std::out_of_range or std::invalid_argument)
+                return HTTP_BAD_REQUEST; // Return HTTP 400 (Bad Request) if conversion fails
             }
-            if (contentLength > MAX_BODY_SIZE) return 413;
+            if (contentLength > MAX_BODY_SIZE) return 413; // If content length exceeds maximum allowed body size (1 MB), return HTTP 413 (Payload Too Large)
         }
 
-        auto expect = request.headers.find("expect");
-        if (body.size() < contentLength && expect != request.headers.end() &&
-            _toLower(expect->second) == "100-continue") {
-            std::string cont = "HTTP/1.1 100 Continue\r\n\r\n";
-            write(client_fd, cont.c_str(), cont.size());
+        auto expect = request.headers.find("expect"); // Look up Expect header in the parsed headers map
+        if (body.size() < contentLength && expect != request.headers.end() && // Check if body is incomplete and Expect header was supplied
+            _toLower(expect->second) == "100-continue") { // Check if Expect header value is "100-continue"
+            std::string cont = "HTTP/1.1 100 Continue\r\n\r\n"; // Prepare the HTTP 100 Continue interim response string
+            write(client_fd, cont.c_str(), cont.size()); // Send 100 Continue response to client to prompt sending of remaining body
         }
 
-        while (body.size() < contentLength) {
-            ssize_t n = read(client_fd, buffer, sizeof(buffer));
-            if (n <= 0) return -1;
-            body.append(buffer, static_cast<size_t>(n));
+        while (body.size() < contentLength) { // Loop until the entire body of length contentLength has been read from the socket
+            ssize_t n = read(client_fd, buffer, sizeof(buffer)); // Read subsequent bytes of the body from the client socket into the buffer
+            if (n <= 0) return -1; // If read fails or client disconnects prematurely, return -1 to signal failure
+            body.append(buffer, static_cast<size_t>(n)); // Append incoming bytes to the body string
         }
-        body.resize(contentLength);
+        body.resize(contentLength); // Trim any potential excess bytes beyond contentLength so the body length matches exactly
 
-        request.body = std::move(body);
-        return 0;
+        request.body = std::move(body); // Move the assembled body string into the request object to avoid unnecessary copying
+        return 0; // Return 0 to indicate request was successfully read and prepared
     }
 
-    void Server::_setError(ServerResponse& res, int status) {
-        sendJson(res, status, Json::Object{{"error", _getStatusMessage(status)}});
+    void Server::_setError(ServerResponse& res, int status) { // Helper function to set an error response with the given HTTP status code and a JSON body containing the error message
+        sendJson(res, status, Json::Object{{"error", _getStatusMessage(status)}}); // Serialize a JSON object with an "error" key set to the status message and populate the response
     }
 
-    void Server::_dispatch(const ServerRequest& request, ServerResponse& response) {
-        auto methodIt = _routes.find(request.method);
-        if (methodIt != _routes.end()) {
-            auto it = methodIt->second.find(request.path);
-            if (it != methodIt->second.end()) {
-                try {
-                    it->second(request, response);
-                } catch (const std::exception& e) {
-                    std::cerr << "Handler threw: " << e.what() << std::endl;
-                    _setError(response, HTTP_INTERNAL_SERVER_ERROR);
+    void Server::_dispatch(const ServerRequest& request, ServerResponse& response) { // Route the incoming request to the appropriate registered handler based on method and path
+        const auto methodIt = _routes.find(request.method); // Look up routing map corresponding to the request's HTTP method (e.g. "GET" or "POST")
+        if (methodIt != _routes.end()) { // If routes have been registered for this HTTP method
+            auto it = methodIt->second.find(request.path); // Look up handler registered for the specific request path within this method's routes
+            if (it != methodIt->second.end()) { // If a matching route handler is found for the path
+                try { // Execute the route handler within a try-catch block to gracefully handle any exceptions thrown by handler code
+                    it->second(request, response); // Invoke the registered route handler function, passing the request and response references
+                } catch (const std::exception& e) { // Catch any standard exception thrown by the route handler
+                    std::cerr << "Handler threw: " << e.what() << std::endl; // Print an error message to standard error indicating that the handler threw an exception
+                    _setError(response, HTTP_INTERNAL_SERVER_ERROR); // Set the response to HTTP 500 (Internal Server Error) to notify the client of the failure
                 }
-                return;
+                return; // Return after the route handler has finished executing
             }
         }
 
         // Path exists, but not for this method -> 405 instead of 404
-        for (const auto &val: _routes | std::views::values) {
-            if (val.contains(request.path)) {
-                _setError(response, 405);
-                return;
+        for (const auto &val: _routes | std::views::values) { // Iterate over the route maps of all registered HTTP methods using a range view
+            if (val.contains(request.path)) { // Check if the requested path is registered under a different HTTP method
+                _setError(response, 405); // Set the response to HTTP 405 (Method Not Allowed) if path exists for other methods
+                return; // Return immediately after setting the 405 response
             }
         }
-        _setError(response, HTTP_NOT_FOUND);
+        _setError(response, HTTP_NOT_FOUND); // If the path does not exist under any registered HTTP method, set the response to HTTP 404 (Not Found)
     }
     //endregion private methods
 } // HTTPServer

@@ -9,22 +9,22 @@
 #include "Json.h"
 
 namespace HTTPServer {
-    class Database {
+    class Database { // Simple file-backed JSON database that persists collections as key-value mappings
         public:
-            explicit Database(std::string path, bool createIfNotExists = false);
+            explicit Database(std::string path, bool createIfNotExists = false); // Constructor that initializes database file path and loads or initializes the JSON file
 
-            Database(const Database&) = delete; // Prevent copy construction
-            Database& operator=(const Database&) = delete; // Prevent copy assignment
+            Database(const Database&) = delete; // Prevent copy construction to avoid concurrent access issues
+            Database& operator=(const Database&) = delete; // Prevent copy assignment to avoid concurrent access issues
 
-            const std::string& getPath() const;
-            size_t collectionCount() const;
+            const std::string& getPath() const; // Return a const reference to the database file path
+            size_t collectionCount() const; // Return the number of collections (top-level keys) currently stored in the database
 
         private:
-            std::string _path;
-            Json::Object _data;
-            bool _createIfNotExists;
+            std::string _path; // Filesystem path to the JSON database storage file
+            Json::Object _data; // In-memory JSON object storing database collections and documents
+            bool _createIfNotExists; // Flag indicating whether to automatically create a new empty database file if none exists
 
-            void _load();
+            void _load(); // Read, parse, and validate JSON data from the storage file on disk
     };
 } // HTTPServer
 
