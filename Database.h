@@ -24,6 +24,8 @@ namespace HTTPServer {
             Json::Object insert(const std::string& tableName, const Json::Object& record); // Validate and insert a new record into the specified table, returning the stored record
             Json::Array select(const std::string& tableName, const Json::Object& where = {}) const; // Query and return records from the specified table matching the given key-value filter criteria
             Json::Array select(const std::string& tableName, const std::function<bool(const Json::Object&)>& where) const; // Query and return records from the specified table matching the given predicate callback
+            Json::Array update(const std::string& tableName, const Json::Object& updates, const Json::Object& where = {}); // Update records matching the key-value filter criteria and return the updated records
+            Json::Array update(const std::string& tableName, const Json::Object& updates, const std::function<bool(const Json::Object&)>& where); // Update records matching the predicate callback and return the updated records
             void save() const; // Persist in-memory database content to disk
 
         private:

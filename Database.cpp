@@ -10,6 +10,7 @@
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <vector>
 
 namespace HTTPServer {
     Database::Database(std::string path, bool createIfNotExists) : _path(std::move(path)), _createIfNotExists(createIfNotExists) { // Construct Database with the given file path and auto-creation flag, then load data
@@ -282,6 +283,139 @@ namespace HTTPServer {
         }
 
         return matched; // Return the array of matching records
+    }
+
+    Json::Array Database::update(const std::string& tableName, const Json::Object& updates, const Json::Object& where) { // Update records matching the key-value filter criteria and return the updated records
+        if (tableName.empty()) { // Check if the provided table name is empty
+            throw std::invalid_argument("Table name cannot be empty"); // Throw exception if table name is empty
+        }
+
+        if (!_data.contains(tableName)) { // Check if the target table exists in the database
+            throw std::invalid_argument("Table '" + tableName + "' does not exist"); // Throw exception if table does not exist
+        }
+
+        const Json::Object& scheme = _data.at(tableName).asObject().at("scheme").asObject(); // Retrieve a const reference to the table schema definition
+
+        for (const auto& [key, val] : where) { // Validate each filter key and value against the table schema
+            if (!scheme.contains(key)) { // Check if the filter column exists in the table schema
+                throw std::invalid_argument("Unknown column '" + key + "' in table '" + tableName + "'"); // Throw exception for unknown filter column
+            }
+
+            const std::string& typeName = scheme.at(key).asObject().at("type").asString(); // Retrieve the expected type name for the filter column
+            if (!val.isNull() && !_matchesType(val, typeName)) { // Ensure non-null filter values match the column's declared type
+                throw std::invalid_argument("Filter value for column '" + key + "' expects type '" + typeName + "'"); // Throw exception if filter value has wrong type
+            }
+        }
+
+        return update(tableName, updates, [&where](const Json::Object& rowObj) { // Delegate to the predicate callback overload using the validated key-value filter
+            for (const auto& [key, expectedVal] : where) { // Check each key-value condition in the filter object
+                if (expectedVal.isNull()) { // Check if the filter condition is matching null / omitted values
+                    if (rowObj.contains(key) && !rowObj.at(key).isNull()) { // If the record contains a non-null value for this column
+                        return false; // Return false because the record does not match the null condition
+                    }
+                } else { // Filter condition expects a specific non-null value
+                    if (!rowObj.contains(key) || rowObj.at(key).dump() != expectedVal.dump()) { // Compare serialized record value with expected value
+                        return false; // Return false if the column is missing or its value differs
+                    }
+                }
+            }
+            return true; // Return true when all conditions in "where" are satisfied
+        });
+    }
+
+    Json::Array Database::update(const std::string& tableName, const Json::Object& updates, const std::function<bool(const Json::Object&)>& where) { // Update records matching the predicate callback and return the updated records
+        if (tableName.empty()) { // Check if the provided table name is empty
+            throw std::invalid_argument("Table name cannot be empty"); // Throw exception if table name is empty
+        }
+
+        if (!_data.contains(tableName)) { // Check if the target table exists in the database
+            throw std::invalid_argument("Table '" + tableName + "' does not exist"); // Throw exception if table does not exist
+        }
+
+        if (updates.empty()) { // Check if the updates object has no column changes specified
+            throw std::invalid_argument("Update data cannot be empty"); // Throw exception when updates map is empty
+        }
+
+        if (!where) { // Check if the provided predicate callback is empty/null
+            throw std::invalid_argument("Filter callback cannot be null"); // Throw exception if callback is not callable
+        }
+
+        Json::Object tableObj = _data.at(tableName).asObject(); // Retrieve a copy of the table JSON object
+        const Json::Object& scheme = tableObj.at("scheme").asObject(); // Retrieve a const reference to the table schema definition
+        Json::Array records = tableObj.at("records").asArray(); // Retrieve a working copy of the existing records array
+
+        for (const auto& [colName, newVal] : updates) { // Validate each column and value in the updates object against the schema
+            if (!scheme.contains(colName)) { // Check if the column exists in the table schema
+                throw std::invalid_argument("Unknown column '" + colName + "' in table '" + tableName + "'"); // Throw exception for unknown column name
+            }
+
+            const Json::Object& colObj = scheme.at(colName).asObject(); // Extract the column schema definition
+            const bool isPrimaryKey = colObj.contains("primary_key") && colObj.at("primary_key").asBool(); // Check if column is marked as a primary key
+            const bool isAutoIncrement = colObj.contains("auto_increment") && colObj.at("auto_increment").asBool(); // Check if column has auto_increment enabled
+            const bool isRequired = colObj.contains("required") && colObj.at("required").asBool(); // Check if column is marked as required
+
+            if (isPrimaryKey) { // Forbid modifying primary key columns
+                throw std::invalid_argument("Column '" + colName + "' is a primary_key and cannot be updated"); // Throw exception when attempting to update a primary_key
+            }
+
+            if (isAutoIncrement) { // Forbid modifying auto_increment columns
+                throw std::invalid_argument("Column '" + colName + "' is auto_increment and cannot be updated"); // Throw exception when attempting to update an auto_increment column
+            }
+
+            if (newVal.isNull()) { // Check if the update value is null
+                if (isRequired) { // Forbid setting a required column to null
+                    throw std::invalid_argument("Required column '" + colName + "' in table '" + tableName + "' cannot be set to null"); // Throw exception when setting required column to null
+                }
+            } else { // Update value is non-null, so validate its type
+                const std::string& typeName = colObj.at("type").asString(); // Retrieve the expected type name for the column
+                if (!_matchesType(newVal, typeName)) { // Check if the new value matches the declared column type
+                    throw std::invalid_argument("Column '" + colName + "' expects type '" + typeName + "'"); // Throw exception on type mismatch
+                }
+            }
+        }
+
+        std::vector<size_t> updatedIndices; // Track indices of records modified during this update operation
+        Json::Array updatedRecords; // Array to collect the updated records to return to the caller
+
+        for (size_t i = 0; i < records.size(); ++i) { // Iterate through all existing records by index
+            Json::Object rowObj = records[i].asObject(); // Retrieve a mutable copy of the current record object
+            if (where(rowObj)) { // Check if the current record satisfies the filter predicate
+                for (const auto& [colName, newVal] : updates) { // Apply each column update to the matched record
+                    rowObj[colName] = newVal; // Assign the new column value in the record
+                }
+                records[i] = rowObj; // Store the modified record back into the working records array
+                updatedIndices.push_back(i); // Record the index of this modified row for uniqueness verification
+                updatedRecords.push_back(std::move(rowObj)); // Append the updated record to the result array
+            }
+        }
+
+        if (updatedRecords.empty()) { // Check if no records matched the filter criteria
+            return updatedRecords; // Return empty array without writing to disk
+        }
+
+        for (const auto& [colName, newVal] : updates) { // Verify uniqueness constraints for any updated unique columns
+            if (newVal.isNull()) continue; // Null values do not violate uniqueness constraints
+            const Json::Object& colObj = scheme.at(colName).asObject(); // Extract the column schema definition
+            const bool isUnique = colObj.contains("unique") && colObj.at("unique").asBool(); // Check if column has unique constraint enabled
+            if (!isUnique) continue; // Skip columns that do not require unique values
+
+            const std::string serializedVal = newVal.dump(); // Serialize the new value for exact equality comparison
+            for (size_t idx : updatedIndices) { // Check each modified record against all other records in the table
+                for (size_t j = 0; j < records.size(); ++j) { // Iterate over all records in the working array
+                    if (idx == j) continue; // Do not compare a record against itself
+                    const Json::Object& otherRow = records[j].asObject(); // Extract the other record's object map
+                    if (otherRow.contains(colName) && otherRow.at(colName).dump() == serializedVal) { // Check if another record holds the same value
+                        throw std::invalid_argument("Duplicate value for unique column '" + colName + "' in table '" + tableName + "'"); // Throw exception on unique constraint violation
+                    }
+                }
+            }
+        }
+
+        tableObj["records"] = std::move(records); // Update the "records" property in the table object
+        _data[tableName] = std::move(tableObj); // Update the table entry in the in-memory database object
+        _save(); // Persist the updated database state to disk
+
+        return updatedRecords; // Return the array of updated records
     }
 
     void Database::save() const { // Persist in-memory database content to disk
