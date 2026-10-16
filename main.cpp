@@ -1,6 +1,7 @@
 #include <string>
 #include <map>
 #include <functional>
+#include <iostream>
 
 #include "Database.h"
 #include "Json.h"
