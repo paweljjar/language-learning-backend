@@ -418,6 +418,80 @@ namespace HTTPServer {
         return updatedRecords; // Return the array of updated records
     }
 
+    Json::Array Database::remove(const std::string& tableName, const Json::Object& where) { // Delete records matching the key-value filter criteria and return the removed records
+        if (tableName.empty()) { // Check if the provided table name is empty
+            throw std::invalid_argument("Table name cannot be empty"); // Throw exception if table name is empty
+        }
+
+        if (!_data.contains(tableName)) { // Check if the target table exists in the database
+            throw std::invalid_argument("Table '" + tableName + "' does not exist"); // Throw exception if table does not exist
+        }
+
+        const Json::Object& scheme = _data.at(tableName).asObject().at("scheme").asObject(); // Retrieve a const reference to the table schema definition
+
+        for (const auto& [key, val] : where) { // Validate each filter key and value against the table schema
+            if (!scheme.contains(key)) { // Check if the filter column exists in the table schema
+                throw std::invalid_argument("Unknown column '" + key + "' in table '" + tableName + "'"); // Throw exception for unknown filter column
+            }
+
+            const std::string& typeName = scheme.at(key).asObject().at("type").asString(); // Retrieve the expected type name for the filter column
+            if (!val.isNull() && !_matchesType(val, typeName)) { // Ensure non-null filter values match the column's declared type
+                throw std::invalid_argument("Filter value for column '" + key + "' expects type '" + typeName + "'"); // Throw exception if filter value has wrong type
+            }
+        }
+
+        return remove(tableName, [&where](const Json::Object& rowObj) { // Delegate to the predicate callback overload using the validated key-value filter
+            for (const auto& [key, expectedVal] : where) { // Check each key-value condition in the filter object
+                if (expectedVal.isNull()) { // Check if the filter condition is matching null / omitted values
+                    if (rowObj.contains(key) && !rowObj.at(key).isNull()) { // If the record contains a non-null value for this column
+                        return false; // Return false because the record does not match the null condition
+                    }
+                } else { // Filter condition expects a specific non-null value
+                    if (!rowObj.contains(key) || rowObj.at(key).dump() != expectedVal.dump()) { // Compare serialized record value with expected value
+                        return false; // Return false if the column is missing or its value differs
+                    }
+                }
+            }
+            return true; // Return true when all conditions in "where" are satisfied
+        });
+    }
+
+    Json::Array Database::remove(const std::string& tableName, const std::function<bool(const Json::Object&)>& where) { // Delete records matching the predicate callback and return the removed records
+        if (tableName.empty()) { // Check if the provided table name is empty
+            throw std::invalid_argument("Table name cannot be empty"); // Throw exception if table name is empty
+        }
+
+        if (!_data.contains(tableName)) { // Check if the target table exists in the database
+            throw std::invalid_argument("Table '" + tableName + "' does not exist"); // Throw exception if table does not exist
+        }
+
+        if (!where) { // Check if the provided predicate callback is empty/null
+            throw std::invalid_argument("Filter callback cannot be null"); // Throw exception if callback is not callable
+        }
+
+        Json::Object tableObj = _data.at(tableName).asObject(); // Retrieve a copy of the table JSON object
+        const Json::Array& records = tableObj.at("records").asArray(); // Retrieve a const reference to the existing records array
+
+        Json::Array remainingRecords; // Array to hold records that do not match the deletion filter
+        Json::Array deletedRecords; // Array to collect the removed records to return to the caller
+
+        for (const auto& row : records) { // Iterate through each existing record in the table
+            if (where(row.asObject())) { // Check if the current record satisfies the deletion predicate
+                deletedRecords.push_back(row); // Add the matching record to the deleted records array
+            } else { // Record does not match the deletion filter
+                remainingRecords.push_back(row); // Keep the record in the remaining records array
+            }
+        }
+
+        if (!deletedRecords.empty()) { // Check if at least one record was removed
+            tableObj["records"] = std::move(remainingRecords); // Update the "records" property with the remaining records
+            _data[tableName] = std::move(tableObj); // Update the table entry in the in-memory database object
+            _save(); // Persist the updated database state to disk
+        }
+
+        return deletedRecords; // Return the array of removed records
+    }
+
     void Database::save() const { // Persist in-memory database content to disk
         _save(); // Serialize and write database data to the storage file
     }
