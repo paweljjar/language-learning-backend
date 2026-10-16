@@ -201,6 +201,89 @@ namespace HTTPServer {
         return newRecord; // Return the inserted record including generated auto_increment fields
     }
 
+    Json::Array Database::select(const std::string& tableName, const Json::Object& where) const { // Query and return records from the specified table matching the given filter criteria
+        if (tableName.empty()) { // Check if the provided table name is empty
+            throw std::invalid_argument("Table name cannot be empty"); // Throw exception if table name is empty
+        }
+
+        if (!_data.contains(tableName)) { // Check if the target table exists in the database
+            throw std::invalid_argument("Table '" + tableName + "' does not exist"); // Throw exception if table does not exist
+        }
+
+        const Json::Object& tableObj = _data.at(tableName).asObject(); // Retrieve a const reference to the table JSON object
+        const Json::Object& scheme = tableObj.at("scheme").asObject(); // Retrieve a const reference to the table schema definition
+        const Json::Array& records = tableObj.at("records").asArray(); // Retrieve a const reference to the table's records array
+
+        if (where.empty()) { // Check if no filter criteria were specified
+            return records; // Return all records in the table when the filter is empty
+        }
+
+        for (const auto& [key, val] : where) { // Validate each filter key and value against the table schema
+            if (!scheme.contains(key)) { // Check if the filter column exists in the table schema
+                throw std::invalid_argument("Unknown column '" + key + "' in table '" + tableName + "'"); // Throw exception for unknown filter column
+            }
+
+            const std::string& typeName = scheme.at(key).asObject().at("type").asString(); // Retrieve the expected type name for the filter column
+            if (!val.isNull() && !_matchesType(val, typeName)) { // Ensure non-null filter values match the column's declared type
+                throw std::invalid_argument("Filter value for column '" + key + "' expects type '" + typeName + "'"); // Throw exception if filter value has wrong type
+            }
+        }
+
+        Json::Array matched; // Array to accumulate records that satisfy all filter criteria
+
+        for (const auto& row : records) { // Iterate through each record in the table
+            const Json::Object& rowObj = row.asObject(); // Extract the object map of the current record
+            bool isMatch = true; // Flag indicating whether the current record matches all conditions in "where"
+
+            for (const auto& [key, expectedVal] : where) { // Check each key-value condition in the filter object
+                if (expectedVal.isNull()) { // Check if the filter condition is matching null / omitted values
+                    if (rowObj.contains(key) && !rowObj.at(key).isNull()) { // If the record contains a non-null value for this column
+                        isMatch = false; // Mark record as non-matching
+                        break; // Stop checking remaining filter conditions for this record
+                    }
+                } else { // Filter condition expects a specific non-null value
+                    if (!rowObj.contains(key) || rowObj.at(key).dump() != expectedVal.dump()) { // Compare serialized record value with expected value
+                        isMatch = false; // Mark record as non-matching if missing or different
+                        break; // Stop checking remaining filter conditions for this record
+                    }
+                }
+            }
+
+            if (isMatch) { // Check if all filter conditions were satisfied
+                matched.push_back(row); // Add the matching record to the result array
+            }
+        }
+
+        return matched; // Return the array of matching records
+    }
+
+    Json::Array Database::select(const std::string& tableName, const std::function<bool(const Json::Object&)>& where) const { // Query and return records from the specified table matching the given predicate callback
+        if (tableName.empty()) { // Check if the provided table name is empty
+            throw std::invalid_argument("Table name cannot be empty"); // Throw exception if table name is empty
+        }
+
+        if (!_data.contains(tableName)) { // Check if the target table exists in the database
+            throw std::invalid_argument("Table '" + tableName + "' does not exist"); // Throw exception if table does not exist
+        }
+
+        if (!where) { // Check if the provided predicate callback is empty/null
+            throw std::invalid_argument("Filter callback cannot be null"); // Throw exception if callback is not callable
+        }
+
+        const Json::Object& tableObj = _data.at(tableName).asObject(); // Retrieve a const reference to the table JSON object
+        const Json::Array& records = tableObj.at("records").asArray(); // Retrieve a const reference to the table's records array
+
+        Json::Array matched; // Array to accumulate records for which the predicate returns true
+
+        for (const auto& row : records) { // Iterate through each record in the table
+            if (where(row.asObject())) { // Invoke the predicate callback with the current record's Json::Object
+                matched.push_back(row); // Append the record to the result array if the predicate returned true
+            }
+        }
+
+        return matched; // Return the array of matching records
+    }
+
     void Database::save() const { // Persist in-memory database content to disk
         _save(); // Serialize and write database data to the storage file
     }

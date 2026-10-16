@@ -4,6 +4,7 @@
 
 #ifndef LANGUAGE_LEARNING_BACKEND_DATABASE_H
 #define LANGUAGE_LEARNING_BACKEND_DATABASE_H
+#include <functional>
 #include <string>
 
 #include "Json.h"
@@ -21,6 +22,8 @@ namespace HTTPServer {
             bool hasTable(const std::string& tableName) const; // Check if a table with the given name exists in the database
             bool createTable(const std::string& tableName, const Json::Object& scheme); // Create a new table with the given name and validated column schema in the database
             Json::Object insert(const std::string& tableName, const Json::Object& record); // Validate and insert a new record into the specified table, returning the stored record
+            Json::Array select(const std::string& tableName, const Json::Object& where = {}) const; // Query and return records from the specified table matching the given key-value filter criteria
+            Json::Array select(const std::string& tableName, const std::function<bool(const Json::Object&)>& where) const; // Query and return records from the specified table matching the given predicate callback
             void save() const; // Persist in-memory database content to disk
 
         private:
