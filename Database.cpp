@@ -4,6 +4,7 @@
 
 #include "Database.h"
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -33,7 +34,7 @@ namespace HTTPServer {
         }
 
         static const std::set<std::string> allowedTypes = { // Set of supported column data type names
-            "integer", "string", "boolean", "number", "float", "array", "object" // Allowed primitive and composite column types
+            "integer", "string", "boolean", "float", "array", "object" // Allowed primitive and composite column types
         };
         static const std::set<std::string> booleanOptions = { // Set of known boolean constraint option keys
             "required", "primary_key", "auto_increment", "unique" // Optional boolean column modifiers
@@ -64,7 +65,33 @@ namespace HTTPServer {
                     throw std::invalid_argument("Option '" + optKey + "' in column '" + columnName + "' must be a boolean"); // Throw exception if boolean constraint is not a bool
                 }
             }
+
+            if (colObj.contains("auto_increment") && colObj.at("auto_increment").asBool() && typeName != "integer") { // Ensure auto_increment is only enabled on integer columns
+                throw std::invalid_argument("Column '" + columnName + "' with 'auto_increment' must have type 'integer'"); // Throw exception if non-integer column uses auto_increment
+            }
         }
+    }
+
+    bool Database::_matchesType(const Json& value, const std::string& typeName) { // Check whether a Json value matches the expected schema type name
+        if (typeName == "integer") { // Check if expected column type is an integer
+            return value.isNumber() && std::isfinite(value.asNumber()) && std::floor(value.asNumber()) == value.asNumber(); // Verify value is a finite whole number
+        }
+        if (typeName == "float") { // Check if expected column type is a floating-point number
+            return value.isNumber() && std::isfinite(value.asNumber()); // Verify value is a finite number
+        }
+        if (typeName == "string") { // Check if expected column type is a string
+            return value.isString(); // Verify value holds a string
+        }
+        if (typeName == "boolean") { // Check if expected column type is a boolean
+            return value.isBool(); // Verify value holds a boolean
+        }
+        if (typeName == "array") { // Check if expected column type is an array
+            return value.isArray(); // Verify value holds a JSON array
+        }
+        if (typeName == "object") { // Check if expected column type is an object
+            return value.isObject(); // Verify value holds a JSON object
+        }
+        return false; // Return false for any unrecognized type name
     }
 
     bool Database::createTable(const std::string& tableName, const Json::Object& scheme) { // Create a new table with the given name and schema in the database
@@ -86,6 +113,92 @@ namespace HTTPServer {
         _save(); // Persist the updated database state to disk
 
         return true; // Return true to indicate successful table creation
+    }
+
+    Json::Object Database::insert(const std::string& tableName, const Json::Object& record) { // Validate and insert a record into the specified table
+        if (tableName.empty()) { // Check if the provided table name is empty
+            throw std::invalid_argument("Table name cannot be empty"); // Throw exception if table name is empty
+        }
+
+        if (!_data.contains(tableName)) { // Check if the target table exists in the database
+            throw std::invalid_argument("Table '" + tableName + "' does not exist"); // Throw exception if table does not exist
+        }
+
+        Json::Object tableObj = _data.at(tableName).asObject(); // Retrieve a copy of the table JSON object
+        const Json::Object& scheme = tableObj.at("scheme").asObject(); // Retrieve a const reference to the table schema definition
+        Json::Array records = tableObj.at("records").asArray(); // Retrieve a copy of the existing records array
+
+        for (const auto& [key, _] : record) { // Iterate over all keys provided in the input record
+            if (!scheme.contains(key)) { // Check if the key corresponds to a defined column in the table schema
+                throw std::invalid_argument("Unknown column '" + key + "' in table '" + tableName + "'"); // Throw exception for unknown column names
+            }
+        }
+
+        Json::Object newRecord; // Create a new JSON object to hold the validated and complete record
+
+        for (const auto& [columnName, columnDef] : scheme) { // Iterate over each column definition in the table schema
+            const Json::Object& colObj = columnDef.asObject(); // Extract the column schema object
+            const std::string& typeName = colObj.at("type").asString(); // Retrieve the required type name for the column
+
+            const bool isAutoIncrement = colObj.contains("auto_increment") && colObj.at("auto_increment").asBool(); // Check if column has auto_increment enabled
+            const bool isPrimaryKey = colObj.contains("primary_key") && colObj.at("primary_key").asBool(); // Check if column is marked as a primary key
+            const bool isRequired = (colObj.contains("required") && colObj.at("required").asBool()) || isPrimaryKey; // Check if column is required (explicitly or via primary_key)
+            const bool isUnique = (colObj.contains("unique") && colObj.at("unique").asBool()) || isPrimaryKey; // Check if column values must be unique (explicitly or via primary_key)
+
+            if (isAutoIncrement) { // Handle automatic value generation for auto_increment columns
+                if (record.contains(columnName)) { // Check if caller attempted to manually provide an auto_increment column value
+                    throw std::invalid_argument("Column '" + columnName + "' is auto_increment and cannot be manually specified"); // Forbid manual values for auto_increment fields
+                }
+
+                long long maxId = 0; // Track the highest existing integer value for this column across all records
+                for (const auto& existingRow : records) { // Iterate through existing records in the table
+                    const Json::Object& rowObj = existingRow.asObject(); // Extract the object map of the existing record
+                    if (rowObj.contains(columnName) && rowObj.at(columnName).isNumber()) { // Check if the existing record has a numeric value for this column
+                        const long long currentId = static_cast<long long>(rowObj.at(columnName).asNumber()); // Convert the existing numeric value to an integer
+                        if (currentId > maxId) { // Compare current record's value against the running maximum
+                            maxId = currentId; // Update running maximum when a larger value is found
+                        }
+                    }
+                }
+
+                newRecord[columnName] = maxId + 1; // Assign the next incremented integer value (starting at 1 when empty)
+                continue; // Proceed to the next column in the schema
+            }
+
+            if (!record.contains(columnName) || record.at(columnName).isNull()) { // Check if the column is omitted or set to null in the input record
+                if (isRequired) { // Check if the column is required by the schema
+                    throw std::invalid_argument("Missing required column '" + columnName + "' in table '" + tableName + "'"); // Throw exception when a required column is missing or null
+                }
+                if (record.contains(columnName)) { // Check if the caller explicitly passed a null value for this optional column
+                    newRecord[columnName] = nullptr; // Preserve the explicit null value in the stored record
+                }
+                continue; // Proceed to the next column in the schema
+            }
+
+            const Json& val = record.at(columnName); // Retrieve the provided value for the current column
+            if (!_matchesType(val, typeName)) { // Validate that the provided value matches the column's declared type
+                throw std::invalid_argument("Column '" + columnName + "' expects type '" + typeName + "'"); // Throw exception on type mismatch
+            }
+
+            if (isUnique) { // Check uniqueness constraint against all existing records in the table
+                const std::string serializedVal = val.dump(); // Serialize the candidate value for exact comparison
+                for (const auto& existingRow : records) { // Iterate through all existing records in the table
+                    const Json::Object& rowObj = existingRow.asObject(); // Extract the object map of the existing record
+                    if (rowObj.contains(columnName) && rowObj.at(columnName).dump() == serializedVal) { // Compare serialized values for equality
+                        throw std::invalid_argument("Duplicate value for unique column '" + columnName + "' in table '" + tableName + "'"); // Throw exception if duplicate value is found
+                    }
+                }
+            }
+
+            newRecord[columnName] = val; // Store the validated column value into the new record object
+        }
+
+        records.push_back(newRecord); // Append the newly constructed record to the table's records array
+        tableObj["records"] = std::move(records); // Update the "records" property in the table object
+        _data[tableName] = std::move(tableObj); // Update the table entry in the in-memory database object
+        _save(); // Persist the updated database state to disk
+
+        return newRecord; // Return the inserted record including generated auto_increment fields
     }
 
     void Database::save() const { // Persist in-memory database content to disk

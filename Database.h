@@ -20,6 +20,7 @@ namespace HTTPServer {
             size_t collectionCount() const; // Return the number of collections (top-level keys) currently stored in the database
             bool hasTable(const std::string& tableName) const; // Check if a table with the given name exists in the database
             bool createTable(const std::string& tableName, const Json::Object& scheme); // Create a new table with the given name and validated column schema in the database
+            Json::Object insert(const std::string& tableName, const Json::Object& record); // Validate and insert a new record into the specified table, returning the stored record
             void save() const; // Persist in-memory database content to disk
 
         private:
@@ -28,6 +29,7 @@ namespace HTTPServer {
             bool _createIfNotExists; // Flag indicating whether to automatically create a new empty database file if none exists
 
             static void _validateScheme(const Json::Object& scheme); // Validate that the table schema contains valid column definitions with required type fields
+            static bool _matchesType(const Json& value, const std::string& typeName); // Check whether a Json value matches the expected schema type name
             void _load(); // Read, parse, and validate JSON data from the storage file on disk
             void _save() const; // Serialize and persist in-memory database data to storage file on disk
     };
