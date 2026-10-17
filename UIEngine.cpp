@@ -4,9 +4,45 @@
 
 #include "UIEngine.h"
 
+#include <sstream>
 #include <utility>
 
 namespace UIEngine {
+    StyleSheet& StyleSheet::rule(std::string selector, StyleDeclarations declarations) { // Add or merge CSS declarations for a given CSS selector
+        for (auto& [existingSelector, existingDecls] : _rules) { // Search if the selector already exists in the stylesheet
+            if (existingSelector == selector) { // If a matching selector rule exists, merge or overwrite its declarations
+                for (auto& [prop, val] : declarations) {
+                    existingDecls[prop] = std::move(val);
+                }
+                return *this;
+            }
+        }
+        _rules.emplace_back(std::move(selector), std::move(declarations)); // Otherwise append a new selector rule
+        return *this; // Return reference to *this for fluent method chaining
+    }
+
+    void StyleSheet::merge(const StyleSheet& other) { // Merge all rules from another StyleSheet into this one
+        for (const auto& [selector, declarations] : other._rules) {
+            rule(selector, declarations);
+        }
+    }
+
+    bool StyleSheet::empty() const { // Check whether the stylesheet contains any rules
+        return _rules.empty();
+    }
+
+    std::string StyleSheet::toCss() const { // Serialize all rules and declarations into a valid CSS string
+        std::ostringstream css;
+        for (const auto& [selector, declarations] : _rules) {
+            css << selector << " {\n";
+            for (const auto& [prop, val] : declarations) {
+                css << "    " << prop << ": " << val << ";\n";
+            }
+            css << "}\n\n";
+        }
+        return css.str();
+    }
+
     VNode VNode::textNode(std::string content) { // Create a raw text VNode with tag "#text" and the given text content
         return VNode{.tag = "#text", .props = {}, .text = std::move(content), .children = {}}; // Initialize VNode with "#text" tag, empty props, moved text, and no children
     }
@@ -42,6 +78,172 @@ namespace UIEngine {
     std::string Component::getProp(const std::string& key, const std::string& fallback) const { // Retrieve a property value by key, or return fallback if absent
         const auto it = _props.find(key); // Look up the key in the component's _props map
         return it != _props.end() ? it->second : fallback; // Return the found property value, or the fallback string if missing
+    }
+
+    namespace {
+        std::string buildHtmlShell(const std::string& apiBaseUrl, const std::string& pageTitle) { // Build the minimal HTML shell document containing only the essentials and the Virtual DOM JS runtime
+            std::ostringstream html;
+            html << R"HTML(<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>)HTML" << pageTitle << R"HTML(</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <div id="root"></div>
+    <script>
+        const API_BASE = ")HTML" << apiBaseUrl << R"HTML(";
+        let currentVNode = null;
+
+        function resolveUrl(endpoint) {
+            if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) return endpoint;
+            return API_BASE + (endpoint.startsWith("/") ? endpoint : "/" + endpoint);
+        }
+
+        function applyProps(el, oldProps = {}, newProps = {}) {
+            for (const key of Object.keys(oldProps)) {
+                if (!(key in newProps)) {
+                    el.removeAttribute(key);
+                }
+            }
+            for (const [key, value] of Object.entries(newProps)) {
+                if (oldProps[key] === value) continue;
+                if (key === "data-on-click") {
+                    el.onclick = async () => {
+                        const method = newProps["data-method"] || "GET";
+                        let body = undefined;
+                        if (newProps["data-body-from"]) {
+                            const inputEl = document.getElementById(newProps["data-body-from"]);
+                            if (inputEl) {
+                                const field = newProps["data-body-field"] || "value";
+                                body = JSON.stringify({ [field]: inputEl.value });
+                            }
+                        }
+                        try {
+                            const res = await fetch(resolveUrl(value), {
+                                method,
+                                headers: body ? { "Content-Type": "application/json" } : {},
+                                body
+                            });
+                            const data = await res.json();
+                            if (newProps["data-target"]) {
+                                const targetEl = document.getElementById(newProps["data-target"]);
+                                const bindKey = newProps["data-bind"];
+                                if (targetEl) {
+                                    targetEl.textContent = bindKey && data[bindKey] !== undefined
+                                        ? data[bindKey]
+                                        : JSON.stringify(data);
+                                }
+                            } else {
+                                await refreshVDom();
+                            }
+                        } catch (err) {
+                            console.error("Action failed:", err);
+                        }
+                    };
+                } else {
+                    el.setAttribute(key, value);
+                }
+            }
+
+            if (newProps["data-fetch"] && el._fetchedUrl !== newProps["data-fetch"]) {
+                el._fetchedUrl = newProps["data-fetch"];
+                fetch(resolveUrl(newProps["data-fetch"]))
+                    .then(r => r.json())
+                    .then(data => {
+                        const bindKey = newProps["data-bind"];
+                        el.textContent = bindKey && data[bindKey] !== undefined
+                            ? data[bindKey]
+                            : JSON.stringify(data);
+                    })
+                    .catch(err => {
+                        el.textContent = "Error connecting to backend: " + err.message;
+                    });
+            }
+        }
+
+        function createDomNode(vnode) {
+            if (vnode.tag === "#text") {
+                return document.createTextNode(vnode.text || "");
+            }
+            const el = document.createElement(vnode.tag);
+            applyProps(el, {}, vnode.props || {});
+            for (const child of (vnode.children || [])) {
+                el.appendChild(createDomNode(child));
+            }
+            return el;
+        }
+
+        function patchDom(parent, oldVNode, newVNode, index = 0) {
+            const existingNode = parent.childNodes[index];
+            if (!oldVNode) {
+                parent.appendChild(createDomNode(newVNode));
+            } else if (!newVNode) {
+                if (existingNode) parent.removeChild(existingNode);
+            } else if (oldVNode.tag !== newVNode.tag) {
+                parent.replaceChild(createDomNode(newVNode), existingNode);
+            } else if (newVNode.tag === "#text") {
+                if (oldVNode.text !== newVNode.text && existingNode) {
+                    existingNode.textContent = newVNode.text;
+                }
+            } else if (existingNode) {
+                applyProps(existingNode, oldVNode.props || {}, newVNode.props || {});
+                const oldChildren = oldVNode.children || [];
+                const newChildren = newVNode.children || [];
+                const maxLen = Math.max(oldChildren.length, newChildren.length);
+                for (let i = 0; i < maxLen; i++) {
+                    patchDom(existingNode, oldChildren[i], newChildren[i], i);
+                }
+            }
+        }
+
+        async function refreshVDom() {
+            const res = await fetch("/vdom");
+            const nextVNode = await res.json();
+            const root = document.getElementById("root");
+            if (!currentVNode) {
+                root.innerHTML = "";
+                root.appendChild(createDomNode(nextVNode));
+            } else {
+                patchDom(root, currentVNode, nextVNode, 0);
+            }
+            currentVNode = nextVNode;
+        }
+
+        window.addEventListener("DOMContentLoaded", refreshVDom);
+    </script>
+</body>
+</html>)HTML";
+            return html.str();
+        }
+    }
+
+    void serveApp(
+        HTTPServer::Server& frontend,
+        std::function<VNode()> rootFactory,
+        StyleSheet styleSheet,
+        std::string apiBaseUrl,
+        std::string pageTitle
+    ) { // Register "/", "/styles.css", and "/vdom" routes on the frontend server to serve the C++ VDOM app
+        const std::string htmlShell = buildHtmlShell(apiBaseUrl, pageTitle); // Pre-build the minimal HTML shell
+        const std::string cssContent = styleSheet.toCss(); // Serialize the C++ StyleSheet into a CSS string
+
+        frontend.get("/", [htmlShell](const HTTPServer::ServerRequest&, HTTPServer::ServerResponse& res) { // Serve the HTML shell at GET /
+            HTTPServer::Server::sendHtml(res, HTTP_OK, htmlShell);
+        });
+
+        frontend.get("/styles.css", [cssContent](const HTTPServer::ServerRequest&, HTTPServer::ServerResponse& res) { // Serve the generated CSS stylesheet at GET /styles.css
+            res.status = HTTP_OK;
+            res.contentType = "text/css";
+            res.charset = "utf-8";
+            res.body = cssContent;
+        });
+
+        frontend.get("/vdom", [factory = std::move(rootFactory)](const HTTPServer::ServerRequest&, HTTPServer::ServerResponse& res) { // Serve the live serialized VNode JSON tree at GET /vdom
+            HTTPServer::Server::sendJson(res, HTTP_OK, factory().toJson());
+        });
     }
 
     namespace Tags {
