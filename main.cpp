@@ -2,24 +2,381 @@
 #include <map>
 #include <functional>
 #include <iostream>
+#include <vector>
 
 #include "Database.h"
 #include "Json.h"
 #include "Server.h"
+#include "UIEngine.h"
 
 using namespace HTTPServer;
 
-int main() {
-    Server server(8000); // Create a server instance on port 8000
-    Database db("database.json", true); // Create a database instance with the specified file and enabled creation if it doesn't exist
+class TopBar : public UIEngine::Component { // Friendly gamified header bar with Lorikeet mascot, app title, and backend-synced word counter pill
+    public:
+        using UIEngine::Component::Component;
 
-    server.get("/", [&server](const ServerRequest&, ServerResponse& res) { // Define a GET route for the root path
-        server.sendJson(res, HTTP_OK, Json::Object{ // Send a JSON response with status 200 OK
-            {"message", "Hello World!"}
+        [[nodiscard]] UIEngine::VNode render() const override {
+            return UIEngine::Tags::header({{"class", "topbar"}}, {
+                UIEngine::Tags::div({{"class", "brand"}}, {
+                    UIEngine::Tags::span({{"class", "brand-icon"}}, "🦜"),
+                    UIEngine::Tags::span({{"class", "brand-name"}}, getProp("title", "Lorikeet"))
+                }),
+                UIEngine::Tags::div({
+                    {"class", "counter-pill"},
+                    {"data-bind-count", "/words"},
+                    {"data-template", "⭐ {count} Words"}
+                }, {
+                    UIEngine::VNode::textNode("⭐ 0 Words")
+                })
+            });
+        }
+
+        [[nodiscard]] UIEngine::StyleSheet styles() const override {
+            UIEngine::StyleSheet s;
+            s.rule(".topbar", {
+                {"display", "flex"},
+                {"justify-content", "space-between"},
+                {"align-items", "center"},
+                {"padding-bottom", "1.25rem"},
+                {"margin-bottom", "2rem"},
+                {"border-bottom", "2px solid #e5e5e5"}
+            })
+            .rule(".brand", {
+                {"display", "flex"},
+                {"align-items", "center"},
+                {"gap", "0.6rem"}
+            })
+            .rule(".brand-icon", {
+                {"font-size", "1.75rem"}
+            })
+            .rule(".brand-name", {
+                {"font-size", "1.7rem"},
+                {"font-weight", "800"},
+                {"color", "#1cb0f6"},
+                {"letter-spacing", "-0.5px"}
+            })
+            .rule(".counter-pill", {
+                {"background", "#fff4e5"},
+                {"color", "#ff9600"},
+                {"border", "2px solid #ffd8a8"},
+                {"border-radius", "999px"},
+                {"padding", "0.45rem 1rem"},
+                {"font-weight", "800"},
+                {"font-size", "0.95rem"}
+            });
+            return s;
+        }
+};
+
+class AddWordCard : public UIEngine::Component { // Tactile card with form to add a new word and translation via backend POST
+    public:
+        using UIEngine::Component::Component;
+
+        [[nodiscard]] UIEngine::VNode render() const override {
+            return UIEngine::Tags::section({{"class", "add-card"}}, {
+                UIEngine::Tags::h2({{"class", "section-title"}}, "Add a New Word"),
+                UIEngine::Tags::p({{"class", "section-subtitle"}}, "Type a word and its translation to grow your vocabulary collection."),
+                UIEngine::Tags::form({
+                    {"class", "word-form"},
+                    {"data-on-submit", "/words"},
+                    {"data-method", "POST"}
+                }, {
+                    UIEngine::Tags::input({
+                        {"name", "word"},
+                        {"placeholder", "Word (e.g. Bonjour)"},
+                        {"required", "true"}
+                    }),
+                    UIEngine::Tags::input({
+                        {"name", "translation"},
+                        {"placeholder", "Translation (e.g. Good morning)"},
+                        {"required", "true"}
+                    }),
+                    UIEngine::Tags::button({{"type", "submit"}, {"class", "btn-add"}}, "ADD WORD")
+                })
+            });
+        }
+
+        [[nodiscard]] UIEngine::StyleSheet styles() const override {
+            UIEngine::StyleSheet s;
+            s.rule(".add-card", {
+                {"background", "#ffffff"},
+                {"border", "2px solid #e5e5e5"},
+                {"border-bottom", "5px solid #e5e5e5"},
+                {"border-radius", "1.25rem"},
+                {"padding", "1.5rem"},
+                {"margin-bottom", "2.25rem"}
+            })
+            .rule(".section-title", {
+                {"margin", "0 0 0.25rem 0"},
+                {"font-size", "1.3rem"},
+                {"font-weight", "800"},
+                {"color", "#3c3c3c"}
+            })
+            .rule(".section-subtitle", {
+                {"margin", "0 0 1.25rem 0"},
+                {"color", "#777777"},
+                {"font-size", "0.95rem"}
+            })
+            .rule(".word-form", {
+                {"display", "flex"},
+                {"flex-wrap", "wrap"},
+                {"gap", "0.75rem"}
+            })
+            .rule(".word-form input", {
+                {"flex", "1 1 200px"},
+                {"background", "#f7f7f7"},
+                {"color", "#3c3c3c"},
+                {"border", "2px solid #e5e5e5"},
+                {"border-bottom", "4px solid #e5e5e5"},
+                {"border-radius", "0.9rem"},
+                {"padding", "0.8rem 1rem"},
+                {"font-size", "1rem"},
+                {"font-weight", "600"},
+                {"outline", "none"}
+            })
+            .rule(".word-form input:focus", {
+                {"background", "#ffffff"},
+                {"border-color", "#1cb0f6"}
+            })
+            .rule(".btn-add", {
+                {"background", "#58cc02"},
+                {"color", "#ffffff"},
+                {"border", "none"},
+                {"border-bottom", "4px solid #58a700"},
+                {"border-radius", "0.9rem"},
+                {"padding", "0.8rem 1.5rem"},
+                {"font-weight", "800"},
+                {"font-size", "0.95rem"},
+                {"letter-spacing", "0.5px"},
+                {"cursor", "pointer"}
+            })
+            .rule(".btn-add:hover", {
+                {"filter", "brightness(1.05)"}
+            })
+            .rule(".btn-add:active", {
+                {"transform", "translateY(2px)"},
+                {"border-bottom-width", "2px"}
+            });
+            return s;
+        }
+};
+
+class WordCard : public UIEngine::Component { // Individual vocabulary flashcard template hydrated from backend JSON records
+    public:
+        using UIEngine::Component::Component;
+
+        [[nodiscard]] UIEngine::VNode render() const override {
+            const std::string id = getProp("id", "{id}");
+            return UIEngine::Tags::div({{"class", "word-card"}}, {
+                UIEngine::Tags::div({{"class", "word-card-top"}}, {
+                    UIEngine::Tags::span({{"class", "word-tag"}}, "CARD #" + id),
+                    UIEngine::Tags::button({
+                        {"class", "btn-delete"},
+                        {"title", "Delete card"},
+                        {"data-on-click", "/words/delete?id=" + id},
+                        {"data-method", "POST"}
+                    }, "✕")
+                }),
+                UIEngine::Tags::h3({{"class", "word-term"}}, getProp("word", "{word}")),
+                UIEngine::Tags::p({{"class", "word-translation"}}, getProp("translation", "{translation}"))
+            });
+        }
+
+        [[nodiscard]] UIEngine::StyleSheet styles() const override {
+            UIEngine::StyleSheet s;
+            s.rule(".word-card", {
+                {"background", "#ffffff"},
+                {"border", "2px solid #e5e5e5"},
+                {"border-bottom", "5px solid #e5e5e5"},
+                {"border-radius", "1.15rem"},
+                {"padding", "1.15rem 1.25rem"},
+                {"transition", "transform 0.12s ease, border-color 0.12s ease"}
+            })
+            .rule(".word-card:hover", {
+                {"border-color", "#1cb0f6"},
+                {"transform", "translateY(-2px)"}
+            })
+            .rule(".word-card-top", {
+                {"display", "flex"},
+                {"justify-content", "space-between"},
+                {"align-items", "center"},
+                {"margin-bottom", "0.5rem"}
+            })
+            .rule(".word-tag", {
+                {"background", "#ddf4ff"},
+                {"color", "#1cb0f6"},
+                {"font-size", "0.72rem"},
+                {"font-weight", "800"},
+                {"padding", "0.2rem 0.55rem"},
+                {"border-radius", "0.5rem"}
+            })
+            .rule(".btn-delete", {
+                {"background", "transparent"},
+                {"color", "#afafaf"},
+                {"border", "none"},
+                {"font-size", "0.95rem"},
+                {"font-weight", "800"},
+                {"cursor", "pointer"},
+                {"padding", "0.15rem 0.4rem"},
+                {"border-radius", "0.4rem"}
+            })
+            .rule(".btn-delete:hover", {
+                {"background", "#ffdfe0"},
+                {"color", "#ff4b4b"}
+            })
+            .rule(".word-term", {
+                {"margin", "0 0 0.3rem 0"},
+                {"font-size", "1.3rem"},
+                {"font-weight", "800"},
+                {"color", "#3c3c3c"}
+            })
+            .rule(".word-translation", {
+                {"margin", "0"},
+                {"font-size", "1rem"},
+                {"font-weight", "600"},
+                {"color", "#777777"}
+            });
+            return s;
+        }
+};
+
+class App : public UIEngine::Component { // Pure frontend application component with zero direct database access
+    public:
+        using UIEngine::Component::Component;
+
+        [[nodiscard]] UIEngine::VNode render() const override {
+            return UIEngine::Tags::main({{"id", "app"}}, {
+                TopBar({{"title", "Lorikeet"}}),
+                AddWordCard{},
+                UIEngine::Tags::section({}, {
+                    UIEngine::Tags::h2({{"class", "deck-heading"}}, "Saved Flashcards"),
+                    UIEngine::Tags::div({
+                        {"class", "cards-grid"},
+                        {"data-for-each", "/words"}
+                    }, {
+                        WordCard{},
+                        UIEngine::Tags::div({{"class", "empty-state"}}, {
+                            UIEngine::Tags::p({{"class", "empty-title"}}, "No flashcards yet!"),
+                            UIEngine::Tags::p({{"class", "empty-sub"}}, "Add your first word and translation above.")
+                        })
+                    })
+                })
+            });
+        }
+
+        [[nodiscard]] UIEngine::StyleSheet styles() const override {
+            UIEngine::StyleSheet s;
+            s.rule("*", {
+                {"box-sizing", "border-box"}
+            })
+            .rule("body", {
+                {"margin", "0"},
+                {"font-family", "'Nunito', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif"},
+                {"background", "#fbfbfb"},
+                {"color", "#3c3c3c"},
+                {"padding", "2.25rem 1.25rem"}
+            })
+            .rule("#root", {
+                {"max-width", "760px"},
+                {"margin", "0 auto"}
+            })
+            .rule(".deck-heading", {
+                {"font-size", "1.3rem"},
+                {"font-weight", "800"},
+                {"color", "#3c3c3c"},
+                {"margin", "0 0 1rem 0"}
+            })
+            .rule(".cards-grid", {
+                {"display", "grid"},
+                {"grid-template-columns", "repeat(auto-fill, minmax(210px, 1fr))"},
+                {"gap", "1rem"}
+            })
+            .rule(".empty-state", {
+                {"grid-column", "1 / -1"},
+                {"text-align", "center"},
+                {"background", "#ffffff"},
+                {"border", "2px dashed #e5e5e5"},
+                {"border-radius", "1.25rem"},
+                {"padding", "2.5rem 1.5rem"}
+            })
+            .rule(".empty-title", {
+                {"margin", "0 0 0.35rem 0"},
+                {"font-size", "1.15rem"},
+                {"font-weight", "800"},
+                {"color", "#3c3c3c"}
+            })
+            .rule(".empty-sub", {
+                {"margin", "0"},
+                {"color", "#777777"},
+                {"font-weight", "600"}
+            });
+
+            s.merge(TopBar{}.styles());
+            s.merge(AddWordCard{}.styles());
+            s.merge(WordCard{}.styles());
+            return s;
+        }
+};
+
+int main() {
+    Server server(8000, "Backend");
+    Database db("database.json", true);
+    Server frontend(8080, "Frontend");
+
+    if (!db.hasTable("words")) {
+        db.createTable("words", Json::Object{
+            {"id", Json::Object{{"type", "integer"}, {"primary_key", true}, {"auto_increment", true}}},
+            {"word", Json::Object{{"type", "string"}, {"required", true}}},
+            {"translation", Json::Object{{"type", "string"}, {"required", true}}}
         });
+    }
+
+    if (db.select("words").empty()) {
+        db.insert("words", Json::Object{{"word", "Hola"}, {"translation", "Hello"}});
+        db.insert("words", Json::Object{{"word", "Gracias"}, {"translation", "Thank you"}});
+        db.insert("words", Json::Object{{"word", "Bonjour"}, {"translation", "Good morning"}});
+    }
+
+    server.get("/words", [&server, &db](const ServerRequest&, ServerResponse& res) {
+        server.sendJson(res, HTTP_OK, db.select("words"));
     });
 
-    server.start(); // Start the server to listen for incoming requests
+    server.post("/words", [&server, &db](const ServerRequest& req, ServerResponse& res) {
+        const Json body = Json::parse(req.body);
+        if (!body.isObject()) {
+            server.sendJson(res, HTTP_BAD_REQUEST, Json::Object{{"error", "Expected JSON object"}});
+            return;
+        }
+        const Json::Object& obj = body.asObject();
+        if (!obj.contains("word") || !obj.contains("translation")) {
+            server.sendJson(res, HTTP_BAD_REQUEST, Json::Object{{"error", "Missing 'word' or 'translation'"}});
+            return;
+        }
+
+        const Json::Object inserted = db.insert("words", Json::Object{
+            {"word", obj.at("word").asString()},
+            {"translation", obj.at("translation").asString()}
+        });
+        server.sendJson(res, HTTP_CREATED, inserted);
+    });
+
+    server.post("/words/delete", [&server, &db](const ServerRequest& req, ServerResponse& res) {
+        if (!req.hasQuery("id")) {
+            server.sendJson(res, HTTP_BAD_REQUEST, Json::Object{{"error", "Missing 'id' query parameter"}});
+            return;
+        }
+        const long long id = std::stoll(req.getQuery("id"));
+        const Json::Array removed = db.remove("words", Json::Object{{"id", id}});
+        server.sendJson(res, HTTP_OK, Json::Object{{"removed", static_cast<int>(removed.size())}});
+    });
+
+    UIEngine::serveApp(frontend, App{}, {}, "http://localhost:8000", "Lorikeet");
+
+    std::thread serverThread = server.startAsync();
+    std::thread frontendThread = frontend.startAsync();
+
+    serverThread.join();
+    frontendThread.join();
 
     return 0;
 }

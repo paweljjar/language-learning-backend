@@ -1,13 +1,15 @@
 cmake_minimum_required(VERSION 4.3)
-project(language_learning_backend)
+project(lorikeet)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(language_learning_backend main.cpp
+add_executable(lorikeet main.cpp
         Server.cpp
         Server.h
         Json.cpp
         Json.h
         Database.cpp
         Database.h
+        UIEngine.cpp
+        UIEngine.h
 )

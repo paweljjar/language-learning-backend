@@ -2,11 +2,12 @@
 // Created by PAWEL on 15/10/2026.
 //
 
-#ifndef LANGUAGE_LEARNING_BACKEND_SERVER_H
-#define LANGUAGE_LEARNING_BACKEND_SERVER_H
+#ifndef LORIKEET_SERVER_H
+#define LORIKEET_SERVER_H
 #include <map>
 #include <string>
 #include <functional>
+#include <thread>
 #include <netinet/in.h>
 
 #include "Json.h"
@@ -34,28 +35,37 @@ namespace HTTPServer {
         int status = HTTP_OK; // HTTP status code to send back to the client, defaults to 200 OK
         std::string body; // Response payload content to transmit to the client
         std::string contentType = "text/plain"; // Content-Type header value specifying the MIME type, defaults to text/plain
+        std::string charset;
     };
 
     using RequestHandler = std::function<void(const ServerRequest&, ServerResponse&)>; // Function type definition for route handlers processing request and generating response
 
     class Server { // Main HTTP server class managing socket setup, routing table, connection acceptance, and request dispatching
         public:
-            explicit Server(int port); // Constructor initializing server port and internal socket state
+            explicit Server(int port, std::string name = ""); // Constructor initializing server port, optional log label, and internal socket state
             void start(); // Start the server by creating, binding, and listening on socket, then entering connection loop
+            std::thread startAsync(); // Start the server asynchronously on a background thread and return the thread handle
             void get(const std::string& path, RequestHandler handler); // Register a route handler callback for HTTP GET requests at the given path
             void post(const std::string& path, RequestHandler handler); // Register a route handler callback for HTTP POST requests at the given path
             int getPort() const; // Return the configured port number the server listens on
+            const std::string& getName() const; // Return the configured name of the server
 
             static void sendJson(ServerResponse& res, int status, const Json& json, int indent = -1); // Helper to serialize a Json object, set Content-Type to application/json, and set status code
+            static void sendHtml(ServerResponse& res, int status, const std::string html); // Helper to set Content-Type to text/html and set status code
 
         private:
             int _port; // Port number on which the server listens for incoming connections
+            std::string _name; // Optional identifier name used to prefix server log messages
             int _server_fd; // Socket file descriptor for the server listener
             sockaddr_in _address; // Socket address structure holding IPv4 address and port configuration
             std::map<std::string, std::map<std::string, RequestHandler>> _routes; // Routing table mapping HTTP method to path to corresponding handler function
 
             static constexpr int MAX_HEADER_SIZE = 16 * 1024; // Maximum allowed size for raw HTTP request headers (16 KB)
             static constexpr int MAX_BODY_SIZE = 1024 * 1024; // Maximum allowed size for HTTP request body payload (1 MB)
+
+            std::string _logPrefix() const; // Build the log message prefix using the server's name if provided
+            void _log(const std::string& message) const; // Write a prefixed informational message to standard output
+            void _logError(const std::string& message) const; // Write a prefixed error message to standard error
 
             static std::string _toLower(std::string s); // Convert all characters in a string to lowercase
             static std::string _trim(const std::string& s); // Strip leading and trailing whitespace characters from a string
@@ -79,4 +89,4 @@ namespace HTTPServer {
     };
 }
 
-#endif //LANGUAGE_LEARNING_BACKEND_SERVER_H
+#endif //LORIKEET_SERVER_H
