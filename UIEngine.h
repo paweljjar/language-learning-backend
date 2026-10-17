@@ -10,13 +10,51 @@
 #include <map>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "Json.h"
 #include "Server.h"
 
 namespace UIEngine {
-    using Props = std::map<std::string, std::string>; // Key-value map representing HTML attributes, styles, and declarative data bindings
+    struct Event { // Represents a DOM event dispatched from the browser runtime to a C++ event handler
+        std::string type; // Event type name (e.g., "click", "submit", "input", "change")
+        std::string value; // Target input element value for "input" and "change" events
+        std::map<std::string, std::string> form; // Key-value map of submitted form fields for "submit" events
+    };
+
+    using EventHandler = std::function<void(const Event&)>; // Callback signature for handling browser DOM events in C++
+
+    class PropValue { // Variant wrapper holding either a string HTML attribute or a C++ event handler callback
+        public:
+            PropValue() : _value(std::string{}) {} // Default constructor initializing an empty string property
+            PropValue(const char* s) : _value(std::string(s ? s : "")) {} // Implicit constructor from C-string literal
+            PropValue(std::string s) : _value(std::move(s)) {} // Implicit constructor from std::string
+            PropValue(EventHandler handler) : _value(std::move(handler)) {} // Implicit constructor from an EventHandler function
+
+            template <typename Fn>
+            requires (!std::same_as<std::decay_t<Fn>, PropValue> &&
+                      !std::convertible_to<Fn, std::string> &&
+                      std::invocable<Fn, const Event&>)
+            PropValue(Fn&& fn) : _value(EventHandler(std::forward<Fn>(fn))) {} // Implicit constructor from any callable accepting const Event&
+
+            template <typename Fn>
+            requires (!std::same_as<std::decay_t<Fn>, PropValue> &&
+                      !std::convertible_to<Fn, std::string> &&
+                      !std::invocable<Fn, const Event&> &&
+                      std::invocable<Fn>)
+            PropValue(Fn&& fn) : _value(EventHandler([f = std::forward<Fn>(fn)](const Event&) { f(); })) {} // Implicit constructor from any zero-argument callable
+
+            [[nodiscard]] bool isString() const { return std::holds_alternative<std::string>(_value); } // Check whether this property stores a string value
+            [[nodiscard]] bool isHandler() const { return std::holds_alternative<EventHandler>(_value); } // Check whether this property stores an event handler callback
+            [[nodiscard]] const std::string& asString() const { return std::get<std::string>(_value); } // Access the underlying string value
+            [[nodiscard]] const EventHandler& asHandler() const { return std::get<EventHandler>(_value); } // Access the underlying event handler callback
+
+        private:
+            std::variant<std::string, EventHandler> _value; // Internal variant storing either a string attribute or an EventHandler
+    };
+
+    using Props = std::map<std::string, PropValue>; // Key-value map representing HTML attributes and C++ event handlers
     using StyleDeclarations = std::map<std::string, std::string>; // Key-value map of CSS property names to values (e.g., {"background", "#1e293b"})
 
     class StyleSheet { // CSS-in-C++ stylesheet builder that stores selector rules and serializes them into a CSS document
