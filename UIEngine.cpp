@@ -95,11 +95,118 @@ namespace UIEngine {
     <div id="root"></div>
     <script>
         const API_BASE = ")HTML" << apiBaseUrl << R"HTML(";
+        let rawVNodeTemplate = null;
         let currentVNode = null;
+        const apiStore = {};
 
         function resolveUrl(endpoint) {
             if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) return endpoint;
             return API_BASE + (endpoint.startsWith("/") ? endpoint : "/" + endpoint);
+        }
+
+        function interpolate(str, item) {
+            if (!str || !item) return str;
+            return str.replace(/\{(\w+)\}/g, (_, key) => item[key] !== undefined ? String(item[key]) : "");
+        }
+
+        function expandVNode(vnode, itemContext = null) {
+            if (vnode.tag === "#text") {
+                return {
+                    tag: "#text",
+                    props: {},
+                    text: itemContext ? interpolate(vnode.text, itemContext) : vnode.text,
+                    children: []
+                };
+            }
+
+            const props = {};
+            for (const [k, v] of Object.entries(vnode.props || {})) {
+                props[k] = itemContext ? interpolate(v, itemContext) : v;
+            }
+
+            if (props["data-bind-count"]) {
+                const list = apiStore[props["data-bind-count"]];
+                const count = Array.isArray(list) ? list.length : 0;
+                const template = props["data-template"] || "{count}";
+                return {
+                    tag: vnode.tag,
+                    props,
+                    text: "",
+                    children: [{
+                        tag: "#text",
+                        props: {},
+                        text: template.replace("{count}", String(count)),
+                        children: []
+                    }]
+                };
+            }
+
+            if (props["data-for-each"] && (vnode.children || []).length > 0) {
+                const endpoint = props["data-for-each"];
+                const list = apiStore[endpoint];
+                const itemTemplate = vnode.children[0];
+                const emptyTemplate = vnode.children[1] || null;
+                const expandedChildren = [];
+
+                if (Array.isArray(list) && list.length > 0) {
+                    for (const row of list) {
+                        expandedChildren.push(expandVNode(itemTemplate, row));
+                    }
+                } else if (emptyTemplate) {
+                    expandedChildren.push(expandVNode(emptyTemplate, null));
+                }
+
+                return {
+                    tag: vnode.tag,
+                    props,
+                    text: "",
+                    children: expandedChildren
+                };
+            }
+
+            return {
+                tag: vnode.tag,
+                props,
+                text: vnode.text || "",
+                children: (vnode.children || []).map(c => expandVNode(c, itemContext))
+            };
+        }
+
+        function collectEndpoints(vnode, out = new Set()) {
+            const p = vnode.props || {};
+            if (p["data-for-each"]) out.add(p["data-for-each"]);
+            if (p["data-bind-count"]) out.add(p["data-bind-count"]);
+            for (const child of (vnode.children || [])) {
+                collectEndpoints(child, out);
+            }
+            return out;
+        }
+
+        async function syncBackendData() {
+            if (!rawVNodeTemplate) return;
+            const endpoints = collectEndpoints(rawVNodeTemplate);
+            await Promise.all(Array.from(endpoints).map(async (ep) => {
+                try {
+                    const res = await fetch(resolveUrl(ep));
+                    apiStore[ep] = await res.json();
+                } catch (err) {
+                    console.error("Failed to fetch", ep, err);
+                }
+            }));
+            renderTree();
+        }
+
+        function renderTree() {
+            if (!rawVNodeTemplate) return;
+            const nextVNode = expandVNode(rawVNodeTemplate);
+            const root = document.getElementById("root");
+            if (!currentVNode) {
+                root.innerHTML = "";
+                root.appendChild(createDomNode(nextVNode));
+            } else {
+                patchDom(root, currentVNode, nextVNode, 0);
+            }
+            currentVNode = nextVNode;
         }
 
         function applyProps(el, oldProps = {}, newProps = {}) {
@@ -110,57 +217,42 @@ namespace UIEngine {
             }
             for (const [key, value] of Object.entries(newProps)) {
                 if (oldProps[key] === value) continue;
-                if (key === "data-on-click") {
-                    el.onclick = async () => {
-                        const method = newProps["data-method"] || "GET";
-                        let body = undefined;
-                        if (newProps["data-body-from"]) {
-                            const inputEl = document.getElementById(newProps["data-body-from"]);
-                            if (inputEl) {
-                                const field = newProps["data-body-field"] || "value";
-                                body = JSON.stringify({ [field]: inputEl.value });
-                            }
+                if (key === "data-on-submit") {
+                    el.onsubmit = async (e) => {
+                        e.preventDefault();
+                        const method = newProps["data-method"] || "POST";
+                        const payload = {};
+                        const formData = new FormData(el);
+                        for (const [field, val] of formData.entries()) {
+                            payload[field] = val;
                         }
                         try {
                             const res = await fetch(resolveUrl(value), {
                                 method,
-                                headers: body ? { "Content-Type": "application/json" } : {},
-                                body
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(payload)
                             });
-                            const data = await res.json();
-                            if (newProps["data-target"]) {
-                                const targetEl = document.getElementById(newProps["data-target"]);
-                                const bindKey = newProps["data-bind"];
-                                if (targetEl) {
-                                    targetEl.textContent = bindKey && data[bindKey] !== undefined
-                                        ? data[bindKey]
-                                        : JSON.stringify(data);
-                                }
-                            } else {
-                                await refreshVDom();
+                            if (res.ok) {
+                                el.reset();
                             }
+                            await syncBackendData();
+                        } catch (err) {
+                            console.error("Form submit failed:", err);
+                        }
+                    };
+                } else if (key === "data-on-click") {
+                    el.onclick = async () => {
+                        const method = newProps["data-method"] || "GET";
+                        try {
+                            await fetch(resolveUrl(value), { method });
+                            await syncBackendData();
                         } catch (err) {
                             console.error("Action failed:", err);
                         }
                     };
-                } else {
+                } else if (!key.startsWith("data-")) {
                     el.setAttribute(key, value);
                 }
-            }
-
-            if (newProps["data-fetch"] && el._fetchedUrl !== newProps["data-fetch"]) {
-                el._fetchedUrl = newProps["data-fetch"];
-                fetch(resolveUrl(newProps["data-fetch"]))
-                    .then(r => r.json())
-                    .then(data => {
-                        const bindKey = newProps["data-bind"];
-                        el.textContent = bindKey && data[bindKey] !== undefined
-                            ? data[bindKey]
-                            : JSON.stringify(data);
-                    })
-                    .catch(err => {
-                        el.textContent = "Error connecting to backend: " + err.message;
-                    });
             }
         }
 
@@ -192,27 +284,23 @@ namespace UIEngine {
                 applyProps(existingNode, oldVNode.props || {}, newVNode.props || {});
                 const oldChildren = oldVNode.children || [];
                 const newChildren = newVNode.children || [];
-                const maxLen = Math.max(oldChildren.length, newChildren.length);
-                for (let i = 0; i < maxLen; i++) {
+                while (existingNode.childNodes.length > newChildren.length) {
+                    existingNode.removeChild(existingNode.lastChild);
+                }
+                for (let i = 0; i < newChildren.length; i++) {
                     patchDom(existingNode, oldChildren[i], newChildren[i], i);
                 }
             }
         }
 
-        async function refreshVDom() {
+        async function initApp() {
             const res = await fetch("/vdom");
-            const nextVNode = await res.json();
-            const root = document.getElementById("root");
-            if (!currentVNode) {
-                root.innerHTML = "";
-                root.appendChild(createDomNode(nextVNode));
-            } else {
-                patchDom(root, currentVNode, nextVNode, 0);
-            }
-            currentVNode = nextVNode;
+            rawVNodeTemplate = await res.json();
+            renderTree();
+            await syncBackendData();
         }
 
-        window.addEventListener("DOMContentLoaded", refreshVDom);
+        window.addEventListener("DOMContentLoaded", initApp);
     </script>
 </body>
 </html>)HTML";
@@ -253,6 +341,10 @@ namespace UIEngine {
 
         VNode span(Props props, std::vector<VNode> children) { // Create a <span> inline container element with props and child VNodes
             return VNode::el("span", std::move(props), std::move(children));
+        }
+
+        VNode span(Props props, const std::string &text) { // Create a <span> inline element containing a single text node
+            return VNode::el("span", std::move(props), { VNode::textNode(text) });
         }
 
         VNode header(Props props, std::vector<VNode> children) { // Create a <header> semantic element with props and child VNodes

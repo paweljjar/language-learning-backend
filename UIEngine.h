@@ -100,6 +100,7 @@ namespace UIEngine {
     namespace Tags { // Ergonomic HTML tag helper functions for building VNode trees
         VNode div(Props props = {}, std::vector<VNode> children = {}); // Create a <div> container element with props and child VNodes
         VNode span(Props props = {}, std::vector<VNode> children = {}); // Create a <span> inline container element with props and child VNodes
+        VNode span(Props props, const std::string &text); // Create a <span> inline element containing a single text node
         VNode header(Props props = {}, std::vector<VNode> children = {}); // Create a <header> semantic element with props and child VNodes
         VNode main(Props props = {}, std::vector<VNode> children = {}); // Create a <main> semantic element with props and child VNodes
         VNode section(Props props = {}, std::vector<VNode> children = {}); // Create a <section> semantic element with props and child VNodes
