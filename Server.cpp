@@ -4,7 +4,10 @@
 
 #include "Server.h"
 
+#include <cctype>
+#include <iomanip>
 #include <iostream>
+#include <random>
 #include <ranges>
 #include <sstream>
 #include <unistd.h>
@@ -21,9 +24,80 @@ namespace HTTPServer {
         return it != query.end() ? it->second : fallback; // If the key is found, return its value; otherwise, return the fallback
     }
 
-    std::string ServerRequest::getHeader(const std::string& key, const std::string& fallback) const { // Get the value of a header, or return a fallback if it doesn't exist
-        const auto it = headers.find(key); // Use the find method of std::map to look for the key
+    std::string ServerRequest::getHeader(const std::string& key, const std::string& fallback) const { // Get the value of a header (case-insensitively), or return a fallback if it doesn't exist
+        std::string lowerKey = key;
+        for (char& c : lowerKey) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        const auto it = headers.find(lowerKey); // Use the find method of std::map to look for the key
         return it != headers.end() ? it->second : fallback; // If the key is found, return its value; otherwise, return the fallback
+    }
+
+    std::string ServerRequest::getCookie(const std::string& name, const std::string& fallback) const { // Retrieve a cookie value by name from the Cookie header, returning fallback if not found
+        const std::string cookieHeader = getHeader("cookie");
+        if (cookieHeader.empty()) {
+            return fallback;
+        }
+
+        size_t start = 0;
+        while (start < cookieHeader.size()) {
+            size_t end = cookieHeader.find(';', start);
+            if (end == std::string::npos) {
+                end = cookieHeader.size();
+            }
+            std::string pair = cookieHeader.substr(start, end - start);
+            const size_t first = pair.find_first_not_of(" \t");
+            const size_t last = pair.find_last_not_of(" \t");
+            if (first != std::string::npos && last != std::string::npos) {
+                pair = pair.substr(first, last - first + 1);
+            } else {
+                pair.clear();
+            }
+
+            const size_t eq = pair.find('=');
+            if (eq != std::string::npos) {
+                const std::string k = pair.substr(0, eq);
+                const std::string v = pair.substr(eq + 1);
+                if (k == name) {
+                    return v;
+                }
+            }
+            start = end + 1;
+        }
+        return fallback;
+    }
+
+    void ServerResponse::setHeader(std::string name, std::string value) { // Set or overwrite an outgoing HTTP response header
+        headers[std::move(name)] = std::move(value);
+    }
+
+    std::string ServerResponse::getHeader(const std::string& name, const std::string& fallback) const { // Retrieve an outgoing response header value
+        const auto it = headers.find(name);
+        return it != headers.end() ? it->second : fallback;
+    }
+
+    std::string generateSessionId() { // Generate a pseudo-random unique session identifier string
+        static thread_local std::mt19937_64 rng(std::random_device{}());
+        std::uniform_int_distribution<uint64_t> dist;
+        const uint64_t p1 = dist(rng);
+        const uint64_t p2 = dist(rng);
+        std::ostringstream ss;
+        ss << std::hex << std::setfill('0')
+           << std::setw(16) << p1
+           << std::setw(16) << p2;
+        return ss.str();
+    }
+
+    std::string extractOrCreateSessionId(const ServerRequest& req, const std::string& cookieName) { // Extract session ID from request headers/cookies with fallback generation
+        std::string sid = req.getHeader("x-session-id");
+        if (!sid.empty()) {
+            return sid;
+        }
+        sid = req.getCookie(cookieName);
+        if (!sid.empty()) {
+            return sid;
+        }
+        return generateSessionId();
     }
 
     //region public methods
@@ -176,12 +250,18 @@ namespace HTTPServer {
         out << "HTTP/1.1 " << response.status << " " << _getStatusMessage(response.status) << "\r\n"
                     << "Content-Type: " << response.contentType
                     << (response.charset.empty() ? "" : "; charset=" + response.charset) << "\r\n"
-                    << "Content-Length: " << response.body.size() << "\r\n"
-                    << "Access-Control-Allow-Origin: *\r\n"
-                    << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                    << "Access-Control-Allow-Headers: Content-Type\r\n"
-                    << "Connection: close\r\n\r\n"
-                    << response.body;
+                    << "Content-Length: " << response.body.size() << "\r\n";
+
+        for (const auto& [name, value] : response.headers) {
+            out << name << ": " << value << "\r\n";
+        }
+
+        out << "Access-Control-Allow-Origin: *\r\n"
+            << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            << "Access-Control-Allow-Headers: Content-Type, X-Session-Id\r\n"
+            << "Access-Control-Expose-Headers: X-Session-Id\r\n"
+            << "Connection: close\r\n\r\n"
+            << response.body;
         return out.str();
     }
 
