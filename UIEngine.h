@@ -7,6 +7,7 @@
 
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Json.h"
@@ -24,6 +25,20 @@ namespace UIEngine {
         static VNode el(std::string tag, Props props = {}, std::vector<VNode> children = {}); // Create an HTML element VNode with tag, attributes, and child nodes
 
         [[nodiscard]] HTTPServer::Json toJson() const; // Recursively serialize this VNode and its children into an HTTPServer::Json object
+    };
+
+    class Component { // Abstract base class for object-oriented UI components with props and a pure virtual render() method
+        public:
+            explicit Component(Props props = {}) : _props(std::move(props)) {} // Construct a component with an optional map of properties
+            virtual ~Component() = default; // Virtual destructor for safe polymorphic cleanup of derived components
+
+            [[nodiscard]] virtual VNode render() const = 0; // Pure virtual method implemented by derived components to return their VNode subtree
+
+        protected:
+            Props _props; // Component properties passed in at construction time
+
+            [[nodiscard]] bool hasProp(const std::string& key) const; // Check whether a specific property key was provided to this component
+            [[nodiscard]] std::string getProp(const std::string& key, const std::string& fallback = "") const; // Retrieve a property value by key, or return fallback if absent
     };
 
     namespace Tags { // Ergonomic HTML tag helper functions for building VNode trees

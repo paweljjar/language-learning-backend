@@ -35,6 +35,15 @@ namespace UIEngine {
         };
     }
 
+    bool Component::hasProp(const std::string& key) const { // Check whether a specific property key was provided to this component
+        return _props.contains(key); // Use std::map::contains to check if the key exists in _props
+    }
+
+    std::string Component::getProp(const std::string& key, const std::string& fallback) const { // Retrieve a property value by key, or return fallback if absent
+        const auto it = _props.find(key); // Look up the key in the component's _props map
+        return it != _props.end() ? it->second : fallback; // Return the found property value, or the fallback string if missing
+    }
+
     namespace Tags {
         VNode div(Props props, std::vector<VNode> children) { // Create a <div> container element with props and child VNodes
             return VNode::el("div", std::move(props), std::move(children));
