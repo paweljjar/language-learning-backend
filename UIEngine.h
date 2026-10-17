@@ -1,0 +1,44 @@
+//
+// Created by PAWEL on 17/10/2026.
+//
+
+#ifndef LANGUAGE_LEARNING_BACKEND_UIENGINE_H
+#define LANGUAGE_LEARNING_BACKEND_UIENGINE_H
+
+#include <map>
+#include <string>
+#include <vector>
+
+namespace UIEngine {
+    using Props = std::map<std::string, std::string>; // Key-value map representing HTML attributes, styles, and declarative data bindings
+
+    struct VNode { // Virtual DOM node representing either an HTML element or a raw text node
+        std::string tag; // HTML tag name (e.g., "div", "button") or "#text" for raw text nodes
+        Props props; // Map of HTML attributes and properties attached to this element
+        std::string text; // Text content used when tag is "#text"
+        std::vector<VNode> children; // Ordered list of child Virtual DOM nodes
+
+        static VNode textNode(std::string content); // Create a raw text VNode with tag "#text" and the given text content
+        static VNode el(std::string tag, Props props = {}, std::vector<VNode> children = {}); // Create an HTML element VNode with tag, attributes, and child nodes
+    };
+
+    namespace Tags { // Ergonomic HTML tag helper functions for building VNode trees
+        VNode div(Props props = {}, std::vector<VNode> children = {}); // Create a <div> container element with props and child VNodes
+        VNode span(Props props = {}, std::vector<VNode> children = {}); // Create a <span> inline container element with props and child VNodes
+        VNode header(Props props = {}, std::vector<VNode> children = {}); // Create a <header> semantic element with props and child VNodes
+        VNode main(Props props = {}, std::vector<VNode> children = {}); // Create a <main> semantic element with props and child VNodes
+        VNode section(Props props = {}, std::vector<VNode> children = {}); // Create a <section> semantic element with props and child VNodes
+        VNode ul(Props props = {}, std::vector<VNode> children = {}); // Create an unordered list <ul> element with props and child VNodes
+        VNode li(Props props = {}, std::vector<VNode> children = {}); // Create a list item <li> element with props and child VNodes
+        VNode form(Props props = {}, std::vector<VNode> children = {}); // Create a <form> element with props and child VNodes
+
+        VNode h1(Props props, std::string text); // Create an <h1> heading element containing a single text node
+        VNode h2(Props props, std::string text); // Create an <h2> heading element containing a single text node
+        VNode h3(Props props, std::string text); // Create an <h3> heading element containing a single text node
+        VNode p(Props props, std::string text); // Create a <p> paragraph element containing a single text node
+        VNode button(Props props, std::string text); // Create a <button> element containing a single text label
+        VNode input(Props props = {}); // Create a self-closing <input> element with the given attributes
+    }
+}
+
+#endif // LANGUAGE_LEARNING_BACKEND_UIENGINE_H

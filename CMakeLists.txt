@@ -10,4 +10,6 @@ add_executable(language_learning_backend main.cpp
         Json.h
         Database.cpp
         Database.h
+        UIEngine.cpp
+        UIEngine.h
 )
