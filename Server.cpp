@@ -27,7 +27,7 @@ namespace HTTPServer {
     }
 
     //region public methods
-    Server::Server(const int port) : _port(port), _server_fd(-1), _address{} { // Constructor for the Server class, initializes the port and sets the server file descriptor to -1 (indicating it's not yet created)
+    Server::Server(const int port, std::string name) : _port(port), _name(std::move(name)), _server_fd(-1), _address{} { // Constructor for the Server class, initializes the port, optional name, and sets the server file descriptor to -1 (indicating it's not yet created)
         if (port < 0 || port > 65535) { // Validate the port number to ensure it's within the valid range for TCP/UDP ports
             throw std::invalid_argument("Port number must be between 0 and 65535"); // If the port number is invalid, throw an exception to indicate the error
         }
@@ -35,19 +35,25 @@ namespace HTTPServer {
 
     void Server::start() { // Start the server, creating the socket, binding it, and listening for incoming connections
         if (!this->_createSocket()) { // Attempt to create the socket, and if it fails, print an error message and return
-            std::cerr << "Error creating socket" << std::endl; // Print an error message to standard error indicating that the socket creation failed
+            _logError("Error creating socket"); // Print an error message to standard error indicating that the socket creation failed
             return;
         }
         if (!this->_bindSocket()) {
-            std::cerr << "Error binding socket" << std::endl; // Print an error message to standard error indicating that the socket binding failed
+            _logError("Error binding socket"); // Print an error message to standard error indicating that the socket binding failed
             return;
         }
         if (!this->_listenPort()) {
-            std::cerr << "Error listening on socket" << std::endl; // Print an error message to standard error indicating that the socket listening failed
+            _logError("Error listening on socket"); // Print an error message to standard error indicating that the socket listening failed
             return;
         }
-        std::cout << "Server started on port " << this->getPort() << std::endl; // Print a message to standard output indicating that the server has started and is listening on the specified port
+        _log("Server started on port " + std::to_string(this->getPort())); // Print a message to standard output indicating that the server has started and is listening on the specified port
         _acceptLoop(); // Enter the accept loop to continuously accept incoming client connections and handle them
+    }
+
+    std::thread Server::startAsync() { // Start the server in a separate background thread so multiple servers can run concurrently
+        return std::thread([this]() { // Spawn and return a std::thread executing this server's blocking start() method
+            this->start(); // Invoke start() on the current Server instance inside the background thread
+        });
     }
 
     void Server::get(const std::string& path, RequestHandler handler)  { _addRoute("GET",  path, std::move(handler)); } // Register a GET route with the specified path and handler function, moving the handler to avoid unnecessary copies
@@ -55,6 +61,10 @@ namespace HTTPServer {
 
     int Server::getPort() const { // Return the port number that the server is listening on
         return _port;
+    }
+
+    const std::string& Server::getName() const { // Return the configured name of the server
+        return _name;
     }
 
     void Server::sendJson(ServerResponse& res, const int status, const Json& json, const int indent) { // Send a JSON response to the client, setting the status code, content type, and body of the response
@@ -73,6 +83,18 @@ namespace HTTPServer {
     //endregion public methods
 
     //region private methods
+    std::string Server::_logPrefix() const { // Build the log message prefix using the server's name if one was provided
+        return _name.empty() ? "" : "[" + _name + "] "; // Return "[name] " when a name is set, or an empty string otherwise
+    }
+
+    void Server::_log(const std::string& message) const { // Write a prefixed informational message to standard output
+        std::cout << (_logPrefix() + message) << std::endl; // Output the combined prefix and message atomically before flushing
+    }
+
+    void Server::_logError(const std::string& message) const { // Write a prefixed error message to standard error
+        std::cerr << (_logPrefix() + message) << std::endl; // Output the combined prefix and error message atomically before flushing
+    }
+
     std::string Server::_toLower(std::string s) { // Convert a string to lowercase by iterating over each character and applying the tolower function, returning the modified string
         for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return s;
@@ -86,47 +108,47 @@ namespace HTTPServer {
 
     void Server::_addRoute(const std::string& method, const std::string& path, RequestHandler handler) { // Add a route to the server's routing table, associating an HTTP method and path with a handler function
         _routes[method][path] = std::move(handler); // Store the handler function in the nested map, moving it to avoid unnecessary copies
-        std::cout << "Registered " << method << " route: " << path << std::endl; // Print a message to standard output indicating that the route has been registered, including the HTTP method and path
+        _log("Registered " + method + " route: " + path); // Print a message to standard output indicating that the route has been registered, including the HTTP method and path
     }
 
     bool Server::_createSocket() { // Create a TCP socket for the server to listen for incoming connections
-        std::cout << "Creating socket..." << std::endl; // Print a message to standard output indicating that the socket creation process has started
+        _log("Creating socket..."); // Print a message to standard output indicating that the socket creation process has started
         this->_server_fd = socket(AF_INET, SOCK_STREAM, 0); // Create a socket using the IPv4 address family (AF_INET), stream socket type (SOCK_STREAM) for TCP, and default protocol (0)
         if (this->_server_fd == -1) { // Check if the socket creation failed (socket returns -1 on error)
-            std::cerr << "Failed to create socket" << std::endl; // Print an error message to standard error indicating that the socket creation failed
+            _logError("Failed to create socket"); // Print an error message to standard error indicating that the socket creation failed
             return false;
         }
 
         constexpr int opt = 1; // Set the socket option to allow reuse of the address, which helps avoid "address already in use" errors when restarting the server
         setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-        std::cout << "Socket created!" << std::endl; // Print a message to standard output indicating that the socket has been successfully created
+        _log("Socket created!"); // Print a message to standard output indicating that the socket has been successfully created
         return true;
     }
 
     bool Server::_bindSocket() { // Bind the created socket to the specified address and port, allowing the server to listen for incoming connections on that port
-        std::cout << "Binding socket..." << std::endl; // Print a message to standard output indicating that the socket binding process has started
+        _log("Binding socket..."); // Print a message to standard output indicating that the socket binding process has started
         this->_address.sin_family = AF_INET; // Set the address family to IPv4 (AF_INET) for the socket
         this->_address.sin_addr.s_addr = INADDR_ANY; // Set the IP address to INADDR_ANY, allowing the server to accept connections on any available network interface
         this->_address.sin_port = htons(this->_port); // Set the port number for the socket, converting it to network byte order using htons (host-to-network short)
 
         if (bind(this->_server_fd, reinterpret_cast<sockaddr*>(&this->_address), sizeof(this->_address)) == -1) { // Attempt to bind the socket to the specified address and port, checking for errors (bind returns -1 on failure)
-            std::cerr << "Failed to bind socket" << std::endl; // Print an error message to standard error indicating that the socket binding failed
+            _logError("Failed to bind socket"); // Print an error message to standard error indicating that the socket binding failed
             return false;
         }
 
-        std::cout << "Socket bound!" << std::endl; // Print a message to standard output indicating that the socket has been successfully bound
+        _log("Socket bound!"); // Print a message to standard output indicating that the socket has been successfully bound
         return true;
     }
 
     bool Server::_listenPort() const { // Start listening for incoming connections on the bound socket, allowing the server to accept client requests
-        std::cout << "Listening on socket..." << std::endl; // Print a message to standard output indicating that the server is starting to listen for incoming connections
+        _log("Listening on socket..."); // Print a message to standard output indicating that the server is starting to listen for incoming connections
         if (listen(this->_server_fd, 10) == -1) { // Call the listen function on the socket, specifying a backlog of 10 (the maximum number of pending connections), and check for errors (listen returns -1 on failure)
-            std::cerr << "Failed to listen on socket" << std::endl; // Print an error message to standard error indicating that the server failed to start listening on the socket
+            _logError("Failed to listen on socket"); // Print an error message to standard error indicating that the server failed to start listening on the socket
             return false;
         }
 
-        std::cout << "Socket is now listening!" << std::endl; // Print a message to standard output indicating that the socket is now listening for incoming connections
+        _log("Socket is now listening!"); // Print a message to standard output indicating that the socket is now listening for incoming connections
         return true;
     }
 
@@ -152,8 +174,12 @@ namespace HTTPServer {
     std::string Server::_buildResponse(const ServerResponse& response) { // Build a complete HTTP response string from the provided ServerResponse object, including the status line, headers, and body, allowing the server to send a properly formatted response to the client
         std::ostringstream out;
         out << "HTTP/1.1 " << response.status << " " << _getStatusMessage(response.status) << "\r\n"
-                    << "Content-Type: " << response.contentType << "\r\n"
+                    << "Content-Type: " << response.contentType
+                    << (response.charset.empty() ? "" : "; charset=" + response.charset) << "\r\n"
                     << "Content-Length: " << response.body.size() << "\r\n"
+                    << "Access-Control-Allow-Origin: *\r\n"
+                    << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+                    << "Access-Control-Allow-Headers: Content-Type\r\n"
                     << "Connection: close\r\n\r\n"
                     << response.body;
         return out.str();
@@ -246,7 +272,7 @@ namespace HTTPServer {
             socklen_t len = sizeof(client); // Initialize address structure length for the accept system call
             const int client_fd = accept(this->_server_fd, reinterpret_cast<sockaddr*>(&client), &len); // Accept the next connection on the server socket, returning a client file descriptor
             if (client_fd == -1) { // Check if the accept call failed (accept returns -1 on error)
-                std::cerr << "Failed to accept connection" << std::endl; // Print an error message to standard error indicating that connection acceptance failed
+                _logError("Failed to accept connection"); // Print an error message to standard error indicating that connection acceptance failed
                 continue; // Continue to the next loop iteration to attempt accepting subsequent connections
             }
             _handleClient(client_fd); // Handle the accepted client connection synchronously using the client file descriptor
@@ -308,6 +334,12 @@ namespace HTTPServer {
     }
 
     void Server::_dispatch(const ServerRequest& request, ServerResponse& response) { // Route the incoming request to the appropriate registered handler based on method and path
+        if (request.method == "OPTIONS") { // Handle CORS preflight OPTIONS requests automatically
+            response.status = HTTP_OK; // Respond with 200 OK for preflight checks
+            response.body = ""; // Empty body for OPTIONS response
+            return; // Return early with CORS headers attached by _buildResponse
+        }
+
         const auto methodIt = _routes.find(request.method); // Look up routing map corresponding to the request's HTTP method (e.g. "GET" or "POST")
         if (methodIt != _routes.end()) { // If routes have been registered for this HTTP method
             auto it = methodIt->second.find(request.path); // Look up handler registered for the specific request path within this method's routes
@@ -315,7 +347,7 @@ namespace HTTPServer {
                 try { // Execute the route handler within a try-catch block to gracefully handle any exceptions thrown by handler code
                     it->second(request, response); // Invoke the registered route handler function, passing the request and response references
                 } catch (const std::exception& e) { // Catch any standard exception thrown by the route handler
-                    std::cerr << "Handler threw: " << e.what() << std::endl; // Print an error message to standard error indicating that the handler threw an exception
+                    _logError(std::string("Handler threw: ") + e.what()); // Print an error message to standard error indicating that the handler threw an exception
                     _setError(response, HTTP_INTERNAL_SERVER_ERROR); // Set the response to HTTP 500 (Internal Server Error) to notify the client of the failure
                 }
                 return; // Return after the route handler has finished executing
