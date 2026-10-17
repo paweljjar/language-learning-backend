@@ -34,6 +34,7 @@ namespace HTTPServer {
         int status = HTTP_OK; // HTTP status code to send back to the client, defaults to 200 OK
         std::string body; // Response payload content to transmit to the client
         std::string contentType = "text/plain"; // Content-Type header value specifying the MIME type, defaults to text/plain
+        std::string charset;
     };
 
     using RequestHandler = std::function<void(const ServerRequest&, ServerResponse&)>; // Function type definition for route handlers processing request and generating response
@@ -47,6 +48,7 @@ namespace HTTPServer {
             int getPort() const; // Return the configured port number the server listens on
 
             static void sendJson(ServerResponse& res, int status, const Json& json, int indent = -1); // Helper to serialize a Json object, set Content-Type to application/json, and set status code
+            static void sendHtml(ServerResponse& res, int status, const std::string html); // Helper to set Content-Type to text/html and set status code
 
         private:
             int _port; // Port number on which the server listens for incoming connections

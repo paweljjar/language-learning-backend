@@ -62,6 +62,14 @@ namespace HTTPServer {
         res.contentType = "application/json"; // Set the Content-Type header of the response to "application/json" to indicate that the response body contains JSON data
         res.body = json.dump(indent); // Serialize the provided Json object to a string using the dump method, with the specified indentation level, and set it as the body of the response
     }
+
+    void Server::sendHtml(ServerResponse &res, int status, const std::string html) { // Send a HTML response to the client, setting the status code, content type, and body of the response
+        res.status = status; // Set the HTTP status code of the response to the provided status value
+        res.contentType = "text/html"; // Set the Content-Type header of the response to "text/html" to indicate that the response body contains HTML data
+        res.charset = "utf-8"; // Set the charset parameter of the Content-Type header to "utf-8" to indicate that the response body is encoded in UTF-8
+        res.body = std::move(html); // Move the provided HTML string into the body of the response
+    }
+
     //endregion public methods
 
     //region private methods
