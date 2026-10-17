@@ -2,8 +2,8 @@
 // Created by PAWEL on 15/10/2026.
 //
 
-#ifndef LANGUAGE_LEARNING_BACKEND_SERVER_H
-#define LANGUAGE_LEARNING_BACKEND_SERVER_H
+#ifndef LORIKEET_SERVER_H
+#define LORIKEET_SERVER_H
 #include <map>
 #include <string>
 #include <functional>
@@ -89,4 +89,4 @@ namespace HTTPServer {
     };
 }
 
-#endif //LANGUAGE_LEARNING_BACKEND_SERVER_H
+#endif //LORIKEET_SERVER_H

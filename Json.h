@@ -2,8 +2,8 @@
 // Created by PAWEL on 15/10/2026.
 //
 
-#ifndef LANGUAGE_LEARNING_BACKEND_JSON_H
-#define LANGUAGE_LEARNING_BACKEND_JSON_H
+#ifndef LORIKEET_JSON_H
+#define LORIKEET_JSON_H
 #include <cstddef>
 #include <map>
 #include <vector>
@@ -82,4 +82,4 @@ namespace HTTPServer {
     };
 } // HTTPServer
 
-#endif //LANGUAGE_LEARNING_BACKEND_JSON_H
+#endif //LORIKEET_JSON_H

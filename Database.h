@@ -2,8 +2,8 @@
 // Created by PAWEL on 15/10/2026.
 //
 
-#ifndef LANGUAGE_LEARNING_BACKEND_DATABASE_H
-#define LANGUAGE_LEARNING_BACKEND_DATABASE_H
+#ifndef LORIKEET_DATABASE_H
+#define LORIKEET_DATABASE_H
 #include <functional>
 #include <string>
 
@@ -42,4 +42,4 @@ namespace HTTPServer {
     };
 } // HTTPServer
 
-#endif //LANGUAGE_LEARNING_BACKEND_DATABASE_H
+#endif //LORIKEET_DATABASE_H

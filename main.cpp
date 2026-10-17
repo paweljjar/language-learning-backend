@@ -11,15 +11,15 @@
 
 using namespace HTTPServer;
 
-class TopBar : public UIEngine::Component { // Friendly gamified header bar with app title and backend-synced word counter pill
+class TopBar : public UIEngine::Component { // Friendly gamified header bar with Lorikeet mascot, app title, and backend-synced word counter pill
     public:
         using UIEngine::Component::Component;
 
         [[nodiscard]] UIEngine::VNode render() const override {
             return UIEngine::Tags::header({{"class", "topbar"}}, {
                 UIEngine::Tags::div({{"class", "brand"}}, {
-                    UIEngine::Tags::span({{"class", "brand-icon"}}, "💬"),
-                    UIEngine::Tags::span({{"class", "brand-name"}}, getProp("title", "WordDeck"))
+                    UIEngine::Tags::span({{"class", "brand-icon"}}, "🦜"),
+                    UIEngine::Tags::span({{"class", "brand-name"}}, getProp("title", "Lorikeet"))
                 }),
                 UIEngine::Tags::div({
                     {"class", "counter-pill"},
@@ -246,7 +246,7 @@ class App : public UIEngine::Component { // Pure frontend application component 
 
         [[nodiscard]] UIEngine::VNode render() const override {
             return UIEngine::Tags::main({{"id", "app"}}, {
-                TopBar({{"title", "WordDeck"}}),
+                TopBar({{"title", "Lorikeet"}}),
                 AddWordCard{},
                 UIEngine::Tags::section({}, {
                     UIEngine::Tags::h2({{"class", "deck-heading"}}, "Saved Flashcards"),
@@ -370,7 +370,7 @@ int main() {
         server.sendJson(res, HTTP_OK, Json::Object{{"removed", static_cast<int>(removed.size())}});
     });
 
-    UIEngine::serveApp(frontend, App{}, {}, "http://localhost:8000", "WordDeck");
+    UIEngine::serveApp(frontend, App{}, {}, "http://localhost:8000", "Lorikeet");
 
     std::thread serverThread = server.startAsync();
     std::thread frontendThread = frontend.startAsync();

@@ -2,8 +2,8 @@
 // Created by PAWEL on 17/10/2026.
 //
 
-#ifndef LANGUAGE_LEARNING_BACKEND_UIENGINE_H
-#define LANGUAGE_LEARNING_BACKEND_UIENGINE_H
+#ifndef LORIKEET_UIENGINE_H
+#define LORIKEET_UIENGINE_H
 
 #include <concepts>
 #include <functional>
@@ -117,4 +117,4 @@ namespace UIEngine {
     }
 }
 
-#endif // LANGUAGE_LEARNING_BACKEND_UIENGINE_H
+#endif // LORIKEET_UIENGINE_H
