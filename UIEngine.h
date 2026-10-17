@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "Json.h"
+
 namespace UIEngine {
     using Props = std::map<std::string, std::string>; // Key-value map representing HTML attributes, styles, and declarative data bindings
 
@@ -20,6 +22,8 @@ namespace UIEngine {
 
         static VNode textNode(std::string content); // Create a raw text VNode with tag "#text" and the given text content
         static VNode el(std::string tag, Props props = {}, std::vector<VNode> children = {}); // Create an HTML element VNode with tag, attributes, and child nodes
+
+        [[nodiscard]] HTTPServer::Json toJson() const; // Recursively serialize this VNode and its children into an HTTPServer::Json object
     };
 
     namespace Tags { // Ergonomic HTML tag helper functions for building VNode trees

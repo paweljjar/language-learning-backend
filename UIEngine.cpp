@@ -15,6 +15,26 @@ namespace UIEngine {
         return VNode{.tag = std::move(tag), .props = std::move(props), .text = "", .children = std::move(children)}; // Initialize VNode with moved tag, props, empty text, and moved children
     }
 
+    HTTPServer::Json VNode::toJson() const { // Recursively serialize this VNode and its children into an HTTPServer::Json object
+        HTTPServer::Json::Object propsObj; // Create a JSON object map to hold this node's HTML attributes and properties
+        for (const auto& [key, val] : props) { // Iterate through each key-value pair in the VNode's Props map
+            propsObj[key] = val; // Insert the attribute name and string value into the JSON object
+        }
+
+        HTTPServer::Json::Array childrenArr; // Create a JSON array to hold serialized child VNodes
+        childrenArr.reserve(children.size()); // Preallocate space for all child VNode JSON objects
+        for (const auto& child : children) { // Iterate through each child VNode in order
+            childrenArr.push_back(child.toJson()); // Recursively serialize the child VNode and append it to the array
+        }
+
+        return HTTPServer::Json::Object{ // Construct and return the complete JSON object representing this VNode
+            {"tag", tag},
+            {"props", std::move(propsObj)},
+            {"text", text},
+            {"children", std::move(childrenArr)}
+        };
+    }
+
     namespace Tags {
         VNode div(Props props, std::vector<VNode> children) { // Create a <div> container element with props and child VNodes
             return VNode::el("div", std::move(props), std::move(children));
