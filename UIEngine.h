@@ -5,6 +5,7 @@
 #ifndef LANGUAGE_LEARNING_BACKEND_UIENGINE_H
 #define LANGUAGE_LEARNING_BACKEND_UIENGINE_H
 
+#include <concepts>
 #include <map>
 #include <string>
 #include <utility>
@@ -33,6 +34,7 @@ namespace UIEngine {
             virtual ~Component() = default; // Virtual destructor for safe polymorphic cleanup of derived components
 
             [[nodiscard]] virtual VNode render() const = 0; // Pure virtual method implemented by derived components to return their VNode subtree
+            operator VNode() const { return render(); } // Implicitly convert any Component instance into its rendered VNode for seamless nesting in children lists
 
         protected:
             Props _props; // Component properties passed in at construction time
@@ -40,6 +42,13 @@ namespace UIEngine {
             [[nodiscard]] bool hasProp(const std::string& key) const; // Check whether a specific property key was provided to this component
             [[nodiscard]] std::string getProp(const std::string& key, const std::string& fallback = "") const; // Retrieve a property value by key, or return fallback if absent
     };
+
+    template <typename CompT, typename... Args>
+    requires std::derived_from<CompT, Component>
+    VNode component(Args&&... args) { // Helper to instantiate a derived Component with arguments and return its rendered VNode
+        CompT instance(std::forward<Args>(args)...); // Construct the component instance with forwarded arguments
+        return instance.render(); // Render and return the resulting VNode subtree
+    }
 
     namespace Tags { // Ergonomic HTML tag helper functions for building VNode trees
         VNode div(Props props = {}, std::vector<VNode> children = {}); // Create a <div> container element with props and child VNodes
