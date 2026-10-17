@@ -5,6 +5,7 @@
 #ifndef LORIKEET_UIENGINE_H
 #define LORIKEET_UIENGINE_H
 
+#include <any>
 #include <concepts>
 #include <functional>
 #include <map>
@@ -57,6 +58,49 @@ namespace UIEngine {
     using Props = std::map<std::string, PropValue>; // Key-value map representing HTML attributes and C++ event handlers
     using StyleDeclarations = std::map<std::string, std::string>; // Key-value map of CSS property names to values (e.g., {"background", "#1e293b"})
 
+    struct FetchOptions { // Configuration options for outgoing HTTP requests made via UIEngine::fetch
+        std::string method = "GET"; // HTTP request method (e.g., "GET", "POST", "DELETE")
+        std::map<std::string, std::string> headers; // Optional custom HTTP headers to include in the request
+        HTTPServer::Json body = nullptr; // Optional JSON payload serialized as the request body when non-null
+    };
+
+    struct FetchResponse { // Response returned by UIEngine::fetch after completing an HTTP request
+        int status = 0; // HTTP response status code (0 if the connection or request failed)
+        std::string rawBody; // Raw HTTP response body content
+
+        [[nodiscard]] bool ok() const { return status >= 200 && status < 300; } // Check whether the HTTP status code is in the 2xx success range
+        [[nodiscard]] HTTPServer::Json json() const; // Parse the raw response body into an HTTPServer::Json value (or null on failure)
+    };
+
+    FetchResponse fetch(const std::string& urlOrEndpoint, const FetchOptions& options = {}); // Execute a synchronous HTTP request against the backend API or a full URL
+
+    namespace Detail { // Internal state store helpers backing persistent UIEngine::State<T> instances across renders
+        std::any& getOrInitState(const std::string& key, const std::function<std::any()>& initializer); // Retrieve a reference to the stored std::any value for key, initializing it if absent
+        void setStateValue(const std::string& key, std::any value); // Overwrite the stored std::any value for key in the persistent state store
+    }
+
+    template <typename T>
+    class State { // React-style persistent component state handle backed by the server-side state store
+        public:
+            explicit State(std::string key, T initialValue = {}) : _key(std::move(key)) { // Register or look up the persistent state slot by key
+                Detail::getOrInitState(_key, [&initialValue]() { return std::any(std::move(initialValue)); });
+            }
+
+            [[nodiscard]] const T& get() const { // Read the current value stored for this state key
+                return std::any_cast<const T&>(Detail::getOrInitState(_key, []() { return std::any(T{}); }));
+            }
+
+            void set(T newValue) const { // Update the stored value for this state key (usable inside const render() lambdas)
+                Detail::setStateValue(_key, std::any(std::move(newValue)));
+            }
+
+            operator const T&() const { return get(); } // Implicitly convert the state handle to a const reference of its underlying value
+            const State& operator=(T newValue) const { set(std::move(newValue)); return *this; } // Assign a new value to the state slot
+
+        private:
+            std::string _key; // Unique identifier key for this state slot in the persistent state store
+    };
+
     class StyleSheet { // CSS-in-C++ stylesheet builder that stores selector rules and serializes them into a CSS document
         public:
             StyleSheet() = default; // Default constructor creating an empty stylesheet
@@ -82,11 +126,12 @@ namespace UIEngine {
         [[nodiscard]] HTTPServer::Json toJson() const; // Recursively serialize this VNode and its children into an HTTPServer::Json object
     };
 
-    class Component { // Abstract base class for object-oriented UI components with props and a pure virtual render() method
+    class Component { // Abstract base class for object-oriented UI components with props, state, lifecycle, and a pure virtual render() method
         public:
             explicit Component(Props props = {}) : _props(std::move(props)) {} // Construct a component with an optional map of properties
             virtual ~Component() = default; // Virtual destructor for safe polymorphic cleanup of derived components
 
+            virtual void onMount() {} // Optional lifecycle hook invoked once when the component is initially mounted
             [[nodiscard]] virtual VNode render() const = 0; // Pure virtual method implemented by derived components to return their VNode subtree
             [[nodiscard]] virtual StyleSheet styles() const { return {}; } // Optional virtual method allowing components to define their own scoped/associated CSS rules
             operator VNode() const { return render(); } // Implicitly convert any Component instance into its rendered VNode for seamless nesting in children lists
@@ -95,7 +140,9 @@ namespace UIEngine {
             Props _props; // Component properties passed in at construction time
 
             [[nodiscard]] bool hasProp(const std::string& key) const; // Check whether a specific property key was provided to this component
-            [[nodiscard]] std::string getProp(const std::string& key, const std::string& fallback = "") const; // Retrieve a property value by key, or return fallback if absent
+            [[nodiscard]] std::string getProp(const std::string& key, const std::string& fallback = "") const; // Retrieve a string property value by key, or return fallback if absent
+            [[nodiscard]] EventHandler getCallback(const std::string& key) const; // Retrieve an EventHandler callback prop by key, or an empty function if absent
+            void triggerCallback(const std::string& key, const Event& event = {}) const; // Invoke an EventHandler callback prop by key if present
     };
 
     template <typename CompT, typename... Args>
@@ -105,7 +152,7 @@ namespace UIEngine {
         return instance.render(); // Render and return the resulting VNode subtree
     }
 
-    // Mount a root VNode factory and StyleSheet onto the frontend HTTP server (registers GET "/", GET "/styles.css", and GET "/vdom")
+    // Mount a root VNode factory and StyleSheet onto the frontend HTTP server (registers GET "/", GET "/styles.css", GET "/vdom", and POST "/event")
     void serveApp(
         HTTPServer::Server& frontend,
         std::function<VNode()> rootFactory,
@@ -114,7 +161,7 @@ namespace UIEngine {
         std::string pageTitle = "App"
     );
 
-    // Overload of serveApp that accepts a root Component subclass directly and automatically extracts its styles() if no custom StyleSheet is passed
+    // Overload of serveApp that accepts a root Component subclass directly, runs onMount() once, and automatically extracts its styles()
     template <typename CompT>
     requires std::derived_from<CompT, Component>
     void serveApp(
@@ -128,7 +175,13 @@ namespace UIEngine {
         combinedStyles.merge(styleSheet); // Merge any additional global stylesheet rules passed to serveApp
         serveApp(
             frontend,
-            [comp = std::move(rootComponent)]() { return comp.render(); },
+            [comp = std::move(rootComponent), mounted = false]() mutable {
+                if (!mounted) {
+                    mounted = true;
+                    comp.onMount();
+                }
+                return comp.render();
+            },
             std::move(combinedStyles),
             std::move(apiBaseUrl),
             std::move(pageTitle)

@@ -11,22 +11,19 @@
 
 using namespace HTTPServer;
 
-class TopBar : public UIEngine::Component { // Friendly gamified header bar with Lorikeet mascot, app title, and backend-synced word counter pill
+class TopBar : public UIEngine::Component { // Friendly gamified header bar with Lorikeet mascot, app title, and word counter pill
     public:
         using UIEngine::Component::Component;
 
         [[nodiscard]] UIEngine::VNode render() const override {
+            const std::string count = getProp("count", "0");
             return UIEngine::Tags::header({{"class", "topbar"}}, {
                 UIEngine::Tags::div({{"class", "brand"}}, {
                     UIEngine::Tags::span({{"class", "brand-icon"}}, "🦜"),
                     UIEngine::Tags::span({{"class", "brand-name"}}, getProp("title", "Lorikeet"))
                 }),
-                UIEngine::Tags::div({
-                    {"class", "counter-pill"},
-                    {"data-bind-count", "/words"},
-                    {"data-template", "⭐ {count} Words"}
-                }, {
-                    UIEngine::VNode::textNode("⭐ 0 Words")
+                UIEngine::Tags::div({{"class", "counter-pill"}}, {
+                    UIEngine::VNode::textNode("⭐ " + count + " Words")
                 })
             });
         }
@@ -68,18 +65,34 @@ class TopBar : public UIEngine::Component { // Friendly gamified header bar with
         }
 };
 
-class AddWordCard : public UIEngine::Component { // Tactile card with form to add a new word and translation via backend POST
+class AddWordCard : public UIEngine::Component { // Tactile card with form to add a new word and translation via C++ onSubmit handler
     public:
         using UIEngine::Component::Component;
 
         [[nodiscard]] UIEngine::VNode render() const override {
+            const UIEngine::EventHandler onAdded = getCallback("onAdded");
             return UIEngine::Tags::section({{"class", "add-card"}}, {
                 UIEngine::Tags::h2({{"class", "section-title"}}, "Add a New Word"),
                 UIEngine::Tags::p({{"class", "section-subtitle"}}, "Type a word and its translation to grow your vocabulary collection."),
                 UIEngine::Tags::form({
                     {"class", "word-form"},
-                    {"data-on-submit", "/words"},
-                    {"data-method", "POST"}
+                    {"onSubmit", [onAdded](const UIEngine::Event& e) {
+                        const auto wordIt = e.form.find("word");
+                        const auto transIt = e.form.find("translation");
+                        if (wordIt == e.form.end() || transIt == e.form.end()) {
+                            return;
+                        }
+                        const UIEngine::FetchResponse res = UIEngine::fetch("/words", {
+                            .method = "POST",
+                            .body = Json::Object{
+                                {"word", wordIt->second},
+                                {"translation", transIt->second}
+                            }
+                        });
+                        if (res.ok() && onAdded) {
+                            onAdded(e);
+                        }
+                    }}
                 }, {
                     UIEngine::Tags::input({
                         {"name", "word"},
@@ -161,24 +174,31 @@ class AddWordCard : public UIEngine::Component { // Tactile card with form to ad
         }
 };
 
-class WordCard : public UIEngine::Component { // Individual vocabulary flashcard template hydrated from backend JSON records
+class WordCard : public UIEngine::Component { // Individual vocabulary flashcard component with C++ onClick delete handler
     public:
         using UIEngine::Component::Component;
 
         [[nodiscard]] UIEngine::VNode render() const override {
-            const std::string id = getProp("id", "{id}");
+            const std::string id = getProp("id", "0");
+            const UIEngine::EventHandler onDeleted = getCallback("onDeleted");
             return UIEngine::Tags::div({{"class", "word-card"}}, {
                 UIEngine::Tags::div({{"class", "word-card-top"}}, {
                     UIEngine::Tags::span({{"class", "word-tag"}}, "CARD #" + id),
                     UIEngine::Tags::button({
                         {"class", "btn-delete"},
                         {"title", "Delete card"},
-                        {"data-on-click", "/words/delete?id=" + id},
-                        {"data-method", "POST"}
+                        {"onClick", [id, onDeleted](const UIEngine::Event& e) {
+                            const UIEngine::FetchResponse res = UIEngine::fetch("/words/delete?id=" + id, {
+                                .method = "POST"
+                            });
+                            if (res.ok() && onDeleted) {
+                                onDeleted(e);
+                            }
+                        }}
                     }, "✕")
                 }),
-                UIEngine::Tags::h3({{"class", "word-term"}}, getProp("word", "{word}")),
-                UIEngine::Tags::p({{"class", "word-translation"}}, getProp("translation", "{translation}"))
+                UIEngine::Tags::h3({{"class", "word-term"}}, getProp("word", "")),
+                UIEngine::Tags::p({{"class", "word-translation"}}, getProp("translation", ""))
             });
         }
 
@@ -240,26 +260,67 @@ class WordCard : public UIEngine::Component { // Individual vocabulary flashcard
         }
 };
 
-class App : public UIEngine::Component { // Pure frontend application component with zero direct database access
+class App : public UIEngine::Component { // Stateful C++ frontend application component managing vocabulary flashcards
     public:
         using UIEngine::Component::Component;
 
+        void onMount() override {
+            refreshWords();
+        }
+
+        void refreshWords() const {
+            const UIEngine::FetchResponse res = UIEngine::fetch("/words");
+            if (res.ok() && res.json().isArray()) {
+                _words = res.json().asArray();
+            }
+        }
+
         [[nodiscard]] UIEngine::VNode render() const override {
+            const Json::Array& wordList = _words.get();
+            std::vector<UIEngine::VNode> cardNodes;
+
+            if (wordList.empty()) {
+                cardNodes.push_back(
+                    UIEngine::Tags::div({{"class", "empty-state"}}, {
+                        UIEngine::Tags::p({{"class", "empty-title"}}, "No flashcards yet!"),
+                        UIEngine::Tags::p({{"class", "empty-sub"}}, "Add your first word and translation above.")
+                    })
+                );
+            } else {
+                cardNodes.reserve(wordList.size());
+                for (const Json& item : wordList) {
+                    if (!item.isObject()) continue;
+                    const Json::Object& obj = item.asObject();
+                    const std::string id = obj.contains("id")
+                        ? std::to_string(static_cast<long long>(obj.at("id").asNumber()))
+                        : "0";
+                    const std::string word = obj.contains("word") && obj.at("word").isString()
+                        ? obj.at("word").asString()
+                        : "";
+                    const std::string translation = obj.contains("translation") && obj.at("translation").isString()
+                        ? obj.at("translation").asString()
+                        : "";
+
+                    cardNodes.push_back(WordCard({
+                        {"id", id},
+                        {"word", word},
+                        {"translation", translation},
+                        {"onDeleted", [this]() { refreshWords(); }}
+                    }));
+                }
+            }
+
             return UIEngine::Tags::main({{"id", "app"}}, {
-                TopBar({{"title", "Lorikeet"}}),
-                AddWordCard{},
+                TopBar({
+                    {"title", "Lorikeet"},
+                    {"count", std::to_string(wordList.size())}
+                }),
+                AddWordCard({
+                    {"onAdded", [this]() { refreshWords(); }}
+                }),
                 UIEngine::Tags::section({}, {
                     UIEngine::Tags::h2({{"class", "deck-heading"}}, "Saved Flashcards"),
-                    UIEngine::Tags::div({
-                        {"class", "cards-grid"},
-                        {"data-for-each", "/words"}
-                    }, {
-                        WordCard{},
-                        UIEngine::Tags::div({{"class", "empty-state"}}, {
-                            UIEngine::Tags::p({{"class", "empty-title"}}, "No flashcards yet!"),
-                            UIEngine::Tags::p({{"class", "empty-sub"}}, "Add your first word and translation above.")
-                        })
-                    })
+                    UIEngine::Tags::div({{"class", "cards-grid"}}, std::move(cardNodes))
                 })
             });
         }
@@ -316,6 +377,9 @@ class App : public UIEngine::Component { // Pure frontend application component 
             s.merge(WordCard{}.styles());
             return s;
         }
+
+    private:
+        UIEngine::State<Json::Array> _words{"App.words", Json::Array{}}; // Persistent React-style state holding the list of flashcards
 };
 
 int main() {

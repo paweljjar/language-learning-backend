@@ -4,10 +4,206 @@
 
 #include "UIEngine.h"
 
+#include <mutex>
+#include <netdb.h>
 #include <sstream>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <utility>
 
 namespace UIEngine {
+    namespace {
+        std::mutex stateStoreMutex; // Mutex guarding concurrent access to the server-side component state store
+        std::map<std::string, std::any> stateStore; // Persistent key-value map storing component state values across renders
+        std::string configuredApiBaseUrl = "http://localhost:8000"; // Default base URL used to resolve relative endpoints in UIEngine::fetch
+
+        std::mutex handlerMutex; // Mutex guarding the server-side event handler registry and render passes
+        std::map<std::string, EventHandler> handlerRegistry; // Map of generated handler IDs ("h_0", "h_1", ...) to C++ EventHandler callbacks
+        size_t nextHandlerId = 0; // Monotonically increasing counter reset on each full root render pass
+
+        std::string normalizeEventAttr(const std::string& propName) { // Map C++ event prop names (e.g., "onClick") to DOM data attributes (e.g., "data-on-click")
+            if (propName == "onClick" || propName == "onclick" || propName == "data-on-click") {
+                return "data-on-click";
+            }
+            if (propName == "onSubmit" || propName == "onsubmit" || propName == "data-on-submit") {
+                return "data-on-submit";
+            }
+            if (propName == "onInput" || propName == "oninput" || propName == "data-on-input") {
+                return "data-on-input";
+            }
+            if (propName == "onChange" || propName == "onchange" || propName == "data-on-change") {
+                return "data-on-change";
+            }
+            return propName;
+        }
+
+        std::string registerEventHandler(const EventHandler& handler) { // Register an EventHandler for the current render pass and return its generated ID
+            const std::string id = "h_" + std::to_string(nextHandlerId++);
+            handlerRegistry[id] = handler;
+            return id;
+        }
+
+        HTTPServer::Json renderRootVNode(const std::function<VNode()>& rootFactory) { // Clear handler registry, render the root VNode tree, and serialize it to JSON
+            std::lock_guard<std::mutex> lock(handlerMutex);
+            handlerRegistry.clear();
+            nextHandlerId = 0;
+            return rootFactory().toJson();
+        }
+
+        struct ParsedUrl { // Decomposed HTTP URL components for establishing a TCP socket connection
+            std::string host = "localhost"; // Target hostname or IPv4/IPv6 address
+            std::string port = "80"; // Target TCP port string
+            std::string path = "/"; // Request path including optional query string
+        };
+
+        ParsedUrl parseHttpUrl(const std::string& rawUrl) { // Parse a full or relative URL into host, port, and path components
+            std::string fullUrl = rawUrl;
+            if (!fullUrl.starts_with("http://") && !fullUrl.starts_with("https://")) {
+                std::string base = configuredApiBaseUrl;
+                if (!base.empty() && base.back() == '/') {
+                    base.pop_back();
+                }
+                fullUrl = base + (fullUrl.starts_with("/") ? fullUrl : "/" + fullUrl);
+            }
+
+            if (fullUrl.starts_with("http://")) {
+                fullUrl = fullUrl.substr(7);
+            } else if (fullUrl.starts_with("https://")) {
+                fullUrl = fullUrl.substr(8);
+            }
+
+            ParsedUrl out;
+            const size_t slashPos = fullUrl.find('/');
+            std::string authority = slashPos == std::string::npos ? fullUrl : fullUrl.substr(0, slashPos);
+            out.path = slashPos == std::string::npos ? "/" : fullUrl.substr(slashPos);
+
+            const size_t colonPos = authority.find(':');
+            if (colonPos != std::string::npos) {
+                out.host = authority.substr(0, colonPos);
+                out.port = authority.substr(colonPos + 1);
+            } else {
+                out.host = authority;
+                out.port = "80";
+            }
+            return out;
+        }
+    }
+
+    HTTPServer::Json FetchResponse::json() const { // Parse the raw response body into an HTTPServer::Json value (or null on failure)
+        if (rawBody.empty()) {
+            return nullptr;
+        }
+        try {
+            return HTTPServer::Json::parse(rawBody);
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    FetchResponse fetch(const std::string& urlOrEndpoint, const FetchOptions& options) { // Execute a synchronous HTTP request against the backend API or a full URL
+        const ParsedUrl target = parseHttpUrl(urlOrEndpoint);
+
+        addrinfo hints{};
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+
+        addrinfo* res = nullptr;
+        if (getaddrinfo(target.host.c_str(), target.port.c_str(), &hints, &res) != 0 || !res) {
+            return FetchResponse{.status = 0, .rawBody = ""};
+        }
+
+        int sock = -1;
+        for (addrinfo* p = res; p != nullptr; p = p->ai_next) {
+            sock = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+            if (sock < 0) continue;
+            if (connect(sock, p->ai_addr, p->ai_addrlen) == 0) {
+                break;
+            }
+            close(sock);
+            sock = -1;
+        }
+        freeaddrinfo(res);
+
+        if (sock < 0) {
+            return FetchResponse{.status = 0, .rawBody = ""};
+        }
+
+        const std::string serializedBody = options.body.isNull() ? "" : options.body.dump();
+        std::ostringstream reqStream;
+        reqStream << options.method << " " << target.path << " HTTP/1.1\r\n";
+        reqStream << "Host: " << target.host << ":" << target.port << "\r\n";
+        reqStream << "Connection: close\r\n";
+
+        bool hasContentType = false;
+        for (const auto& [k, v] : options.headers) {
+            if (k == "Content-Type" || k == "content-type") {
+                hasContentType = true;
+            }
+            reqStream << k << ": " << v << "\r\n";
+        }
+
+        if (!serializedBody.empty()) {
+            if (!hasContentType) {
+                reqStream << "Content-Type: application/json\r\n";
+            }
+            reqStream << "Content-Length: " << serializedBody.size() << "\r\n";
+        } else if (options.method == "POST" || options.method == "PUT" || options.method == "PATCH") {
+            reqStream << "Content-Length: 0\r\n";
+        }
+
+        reqStream << "\r\n" << serializedBody;
+        const std::string rawRequest = reqStream.str();
+
+        size_t totalSent = 0;
+        while (totalSent < rawRequest.size()) {
+            const ssize_t sent = send(sock, rawRequest.data() + totalSent, rawRequest.size() - totalSent, 0);
+            if (sent <= 0) {
+                close(sock);
+                return FetchResponse{.status = 0, .rawBody = ""};
+            }
+            totalSent += static_cast<size_t>(sent);
+        }
+
+        std::string rawResponse;
+        char buffer[4096];
+        while (true) {
+            const ssize_t n = recv(sock, buffer, sizeof(buffer), 0);
+            if (n <= 0) break;
+            rawResponse.append(buffer, static_cast<size_t>(n));
+        }
+        close(sock);
+
+        FetchResponse response;
+        const size_t headerEnd = rawResponse.find("\r\n\r\n");
+        if (headerEnd == std::string::npos) {
+            return response;
+        }
+
+        const std::string headerBlock = rawResponse.substr(0, headerEnd);
+        response.rawBody = rawResponse.substr(headerEnd + 4);
+
+        std::istringstream headerStream(headerBlock);
+        std::string httpVersion;
+        headerStream >> httpVersion >> response.status;
+        return response;
+    }
+
+    namespace Detail {
+        std::any& getOrInitState(const std::string& key, const std::function<std::any()>& initializer) { // Retrieve a reference to the stored std::any value for key, initializing it if absent
+            std::lock_guard<std::mutex> lock(stateStoreMutex);
+            auto it = stateStore.find(key);
+            if (it == stateStore.end()) {
+                it = stateStore.emplace(key, initializer()).first;
+            }
+            return it->second;
+        }
+
+        void setStateValue(const std::string& key, std::any value) { // Overwrite the stored std::any value for key in the persistent state store
+            std::lock_guard<std::mutex> lock(stateStoreMutex);
+            stateStore[key] = std::move(value);
+        }
+    }
+
     StyleSheet& StyleSheet::rule(std::string selector, StyleDeclarations declarations) { // Add or merge CSS declarations for a given CSS selector
         for (auto& [existingSelector, existingDecls] : _rules) { // Search if the selector already exists in the stylesheet
             if (existingSelector == selector) { // If a matching selector rule exists, merge or overwrite its declarations
@@ -52,9 +248,13 @@ namespace UIEngine {
     }
 
     HTTPServer::Json VNode::toJson() const { // Recursively serialize this VNode and its children into an HTTPServer::Json object
-        HTTPServer::Json::Object propsObj; // Create a JSON object map to hold this node's HTML attributes and properties
+        HTTPServer::Json::Object propsObj; // Create a JSON object map to hold this node's HTML attributes and event handler IDs
         for (const auto& [key, val] : props) { // Iterate through each key-value pair in the VNode's Props map
-            propsObj[key] = val; // Insert the attribute name and string value into the JSON object
+            if (val.isString()) {
+                propsObj[key] = val.asString(); // Insert the attribute name and string value into the JSON object
+            } else if (val.isHandler()) {
+                propsObj[normalizeEventAttr(key)] = registerEventHandler(val.asHandler()); // Register C++ callback and emit its handler ID
+            }
         }
 
         HTTPServer::Json::Array childrenArr; // Create a JSON array to hold serialized child VNodes
@@ -75,13 +275,30 @@ namespace UIEngine {
         return _props.contains(key); // Use std::map::contains to check if the key exists in _props
     }
 
-    std::string Component::getProp(const std::string& key, const std::string& fallback) const { // Retrieve a property value by key, or return fallback if absent
+    std::string Component::getProp(const std::string& key, const std::string& fallback) const { // Retrieve a string property value by key, or return fallback if absent
         const auto it = _props.find(key); // Look up the key in the component's _props map
-        return it != _props.end() ? it->second : fallback; // Return the found property value, or the fallback string if missing
+        if (it != _props.end() && it->second.isString()) {
+            return it->second.asString(); // Return the found string property value
+        }
+        return fallback; // Return the fallback string if missing or not a string prop
+    }
+
+    EventHandler Component::getCallback(const std::string& key) const { // Retrieve an EventHandler callback prop by key, or an empty function if absent
+        const auto it = _props.find(key); // Look up the key in the component's _props map
+        if (it != _props.end() && it->second.isHandler()) {
+            return it->second.asHandler(); // Return the found EventHandler callback
+        }
+        return {}; // Return an empty EventHandler if missing or not a handler prop
+    }
+
+    void Component::triggerCallback(const std::string& key, const Event& event) const { // Invoke an EventHandler callback prop by key if present
+        if (const EventHandler cb = getCallback(key)) {
+            cb(event);
+        }
     }
 
     namespace {
-        std::string buildHtmlShell(const std::string& apiBaseUrl, const std::string& pageTitle) { // Build the minimal HTML shell document containing only the essentials and the Virtual DOM JS runtime
+        std::string buildHtmlShell(const std::string& pageTitle) { // Build the minimal HTML shell containing the Virtual DOM renderer and C++ event bridge
             std::ostringstream html;
             html << R"HTML(<!DOCTYPE html>
 <html lang="en">
@@ -94,111 +311,10 @@ namespace UIEngine {
 <body>
     <div id="root"></div>
     <script>
-        const API_BASE = ")HTML" << apiBaseUrl << R"HTML(";
-        let rawVNodeTemplate = null;
         let currentVNode = null;
-        const apiStore = {};
 
-        function resolveUrl(endpoint) {
-            if (endpoint.startsWith("http://") || endpoint.startsWith("https://")) return endpoint;
-            return API_BASE + (endpoint.startsWith("/") ? endpoint : "/" + endpoint);
-        }
-
-        function interpolate(str, item) {
-            if (!str || !item) return str;
-            return str.replace(/\{(\w+)\}/g, (_, key) => item[key] !== undefined ? String(item[key]) : "");
-        }
-
-        function expandVNode(vnode, itemContext = null) {
-            if (vnode.tag === "#text") {
-                return {
-                    tag: "#text",
-                    props: {},
-                    text: itemContext ? interpolate(vnode.text, itemContext) : vnode.text,
-                    children: []
-                };
-            }
-
-            const props = {};
-            for (const [k, v] of Object.entries(vnode.props || {})) {
-                props[k] = itemContext ? interpolate(v, itemContext) : v;
-            }
-
-            if (props["data-bind-count"]) {
-                const list = apiStore[props["data-bind-count"]];
-                const count = Array.isArray(list) ? list.length : 0;
-                const template = props["data-template"] || "{count}";
-                return {
-                    tag: vnode.tag,
-                    props,
-                    text: "",
-                    children: [{
-                        tag: "#text",
-                        props: {},
-                        text: template.replace("{count}", String(count)),
-                        children: []
-                    }]
-                };
-            }
-
-            if (props["data-for-each"] && (vnode.children || []).length > 0) {
-                const endpoint = props["data-for-each"];
-                const list = apiStore[endpoint];
-                const itemTemplate = vnode.children[0];
-                const emptyTemplate = vnode.children[1] || null;
-                const expandedChildren = [];
-
-                if (Array.isArray(list) && list.length > 0) {
-                    for (const row of list) {
-                        expandedChildren.push(expandVNode(itemTemplate, row));
-                    }
-                } else if (emptyTemplate) {
-                    expandedChildren.push(expandVNode(emptyTemplate, null));
-                }
-
-                return {
-                    tag: vnode.tag,
-                    props,
-                    text: "",
-                    children: expandedChildren
-                };
-            }
-
-            return {
-                tag: vnode.tag,
-                props,
-                text: vnode.text || "",
-                children: (vnode.children || []).map(c => expandVNode(c, itemContext))
-            };
-        }
-
-        function collectEndpoints(vnode, out = new Set()) {
-            const p = vnode.props || {};
-            if (p["data-for-each"]) out.add(p["data-for-each"]);
-            if (p["data-bind-count"]) out.add(p["data-bind-count"]);
-            for (const child of (vnode.children || [])) {
-                collectEndpoints(child, out);
-            }
-            return out;
-        }
-
-        async function syncBackendData() {
-            if (!rawVNodeTemplate) return;
-            const endpoints = collectEndpoints(rawVNodeTemplate);
-            await Promise.all(Array.from(endpoints).map(async (ep) => {
-                try {
-                    const res = await fetch(resolveUrl(ep));
-                    apiStore[ep] = await res.json();
-                } catch (err) {
-                    console.error("Failed to fetch", ep, err);
-                }
-            }));
-            renderTree();
-        }
-
-        function renderTree() {
-            if (!rawVNodeTemplate) return;
-            const nextVNode = expandVNode(rawVNodeTemplate);
+        function renderTree(nextVNode) {
+            if (!nextVNode) return;
             const root = document.getElementById("root");
             if (!currentVNode) {
                 root.innerHTML = "";
@@ -209,10 +325,30 @@ namespace UIEngine {
             currentVNode = nextVNode;
         }
 
+        async function dispatchEvent(handlerId, eventPayload) {
+            try {
+                const res = await fetch("/event", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ handlerId, ...eventPayload })
+                });
+                if (res.ok) {
+                    const nextVNode = await res.json();
+                    renderTree(nextVNode);
+                }
+            } catch (err) {
+                console.error("Event dispatch failed:", err);
+            }
+        }
+
         function applyProps(el, oldProps = {}, newProps = {}) {
             for (const key of Object.keys(oldProps)) {
                 if (!(key in newProps)) {
-                    el.removeAttribute(key);
+                    if (key === "data-on-click") el.onclick = null;
+                    else if (key === "data-on-submit") el.onsubmit = null;
+                    else if (key === "data-on-input") el.oninput = null;
+                    else if (key === "data-on-change") el.onchange = null;
+                    else el.removeAttribute(key);
                 }
             }
             for (const [key, value] of Object.entries(newProps)) {
@@ -220,37 +356,30 @@ namespace UIEngine {
                 if (key === "data-on-submit") {
                     el.onsubmit = async (e) => {
                         e.preventDefault();
-                        const method = newProps["data-method"] || "POST";
-                        const payload = {};
+                        const form = {};
                         const formData = new FormData(el);
                         for (const [field, val] of formData.entries()) {
-                            payload[field] = val;
+                            form[field] = String(val);
                         }
-                        try {
-                            const res = await fetch(resolveUrl(value), {
-                                method,
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify(payload)
-                            });
-                            if (res.ok) {
-                                el.reset();
-                            }
-                            await syncBackendData();
-                        } catch (err) {
-                            console.error("Form submit failed:", err);
-                        }
+                        await dispatchEvent(value, { type: "submit", form });
+                        el.reset();
                     };
                 } else if (key === "data-on-click") {
                     el.onclick = async () => {
-                        const method = newProps["data-method"] || "GET";
-                        try {
-                            await fetch(resolveUrl(value), { method });
-                            await syncBackendData();
-                        } catch (err) {
-                            console.error("Action failed:", err);
-                        }
+                        await dispatchEvent(value, { type: "click" });
                     };
-                } else if (!key.startsWith("data-")) {
+                } else if (key === "data-on-input") {
+                    el.oninput = async (e) => {
+                        await dispatchEvent(value, { type: "input", value: e.target.value || "" });
+                    };
+                } else if (key === "data-on-change") {
+                    el.onchange = async (e) => {
+                        await dispatchEvent(value, { type: "change", value: e.target.value || "" });
+                    };
+                } else if (!key.startsWith("data-on-")) {
+                    if (key === "value" && "value" in el) {
+                        el.value = value;
+                    }
                     el.setAttribute(key, value);
                 }
             }
@@ -295,9 +424,8 @@ namespace UIEngine {
 
         async function initApp() {
             const res = await fetch("/vdom");
-            rawVNodeTemplate = await res.json();
-            renderTree();
-            await syncBackendData();
+            const initialVNode = await res.json();
+            renderTree(initialVNode);
         }
 
         window.addEventListener("DOMContentLoaded", initApp);
@@ -314,8 +442,9 @@ namespace UIEngine {
         StyleSheet styleSheet,
         std::string apiBaseUrl,
         std::string pageTitle
-    ) { // Register "/", "/styles.css", and "/vdom" routes on the frontend server to serve the C++ VDOM app
-        const std::string htmlShell = buildHtmlShell(apiBaseUrl, pageTitle); // Pre-build the minimal HTML shell
+    ) { // Register "/", "/styles.css", "/vdom", and "/event" routes on the frontend server to serve the C++ VDOM app
+        configuredApiBaseUrl = std::move(apiBaseUrl); // Store the configured backend base URL for UIEngine::fetch
+        const std::string htmlShell = buildHtmlShell(pageTitle); // Pre-build the minimal HTML shell
         const std::string cssContent = styleSheet.toCss(); // Serialize the C++ StyleSheet into a CSS string
 
         frontend.get("/", [htmlShell](const HTTPServer::ServerRequest&, HTTPServer::ServerResponse& res) { // Serve the HTML shell at GET /
@@ -329,8 +458,49 @@ namespace UIEngine {
             res.body = cssContent;
         });
 
-        frontend.get("/vdom", [factory = std::move(rootFactory)](const HTTPServer::ServerRequest&, HTTPServer::ServerResponse& res) { // Serve the live serialized VNode JSON tree at GET /vdom
-            HTTPServer::Server::sendJson(res, HTTP_OK, factory().toJson());
+        frontend.get("/vdom", [rootFactory](const HTTPServer::ServerRequest&, HTTPServer::ServerResponse& res) { // Serve the live serialized VNode JSON tree at GET /vdom
+            HTTPServer::Server::sendJson(res, HTTP_OK, renderRootVNode(rootFactory));
+        });
+
+        frontend.post("/event", [factory = std::move(rootFactory)](const HTTPServer::ServerRequest& req, HTTPServer::ServerResponse& res) { // Dispatch a browser event to its C++ EventHandler and return the re-rendered VNode tree
+            const HTTPServer::Json payload = HTTPServer::Json::parse(req.body);
+            if (!payload.isObject() || !payload.asObject().contains("handlerId")) {
+                HTTPServer::Server::sendJson(res, HTTP_BAD_REQUEST, HTTPServer::Json::Object{{"error", "Missing handlerId"}});
+                return;
+            }
+
+            const HTTPServer::Json::Object& obj = payload.asObject();
+            const std::string handlerId = obj.at("handlerId").asString();
+
+            Event event;
+            if (obj.contains("type") && obj.at("type").isString()) {
+                event.type = obj.at("type").asString();
+            }
+            if (obj.contains("value") && obj.at("value").isString()) {
+                event.value = obj.at("value").asString();
+            }
+            if (obj.contains("form") && obj.at("form").isObject()) {
+                for (const auto& [field, val] : obj.at("form").asObject()) {
+                    if (val.isString()) {
+                        event.form[field] = val.asString();
+                    }
+                }
+            }
+
+            EventHandler targetHandler;
+            {
+                std::lock_guard<std::mutex> lock(handlerMutex);
+                const auto it = handlerRegistry.find(handlerId);
+                if (it != handlerRegistry.end()) {
+                    targetHandler = it->second;
+                }
+            }
+
+            if (targetHandler) {
+                targetHandler(event);
+            }
+
+            HTTPServer::Server::sendJson(res, HTTP_OK, renderRootVNode(factory));
         });
     }
 
